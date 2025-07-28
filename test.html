@@ -235,6 +235,7 @@
                 this.isReceiving = false;
                 this.lastFPSTime = 0;
                 this.frameCount = 0;
+                this.lastProcessedSequence = -1; // 最後に処理したシーケンス番号
 
                 this.qrChunks = [];
                 this.flashInterval = null;
@@ -330,20 +331,53 @@
             processQRCode(data) {
                 const startFlag = this.startFlag.value;
 
+                // シーケンス番号を抽出（形式: "SEQ:001:データ" または "START:SEQ:001:データ"）
+                let sequenceMatch;
+                let actualData;
+                let isStartFlag = false;
+
                 if (data.startsWith(startFlag)) {
-                    // 開始フラグが見つかった場合、受信を開始
-                    if (!this.isReceiving) {
-                        this.isReceiving = true;
-                        this.receivedData = '';
-                        this.updateReaderStatus('データ受信を開始しました', 'success');
+                    // 開始フラグありの場合
+                    isStartFlag = true;
+                    const afterStartFlag = data.substring(startFlag.length);
+                    sequenceMatch = afterStartFlag.match(/^SEQ:(\d+):(.*)/);
+                    if (sequenceMatch) {
+                        actualData = sequenceMatch[2];
+                    } else {
+                        // 古い形式の互換性のため
+                        actualData = afterStartFlag;
+                        sequenceMatch = [null, "0", afterStartFlag];
                     }
-                    // 開始フラグを除去してデータを追加
-                    const actualData = data.substring(startFlag.length);
+                } else {
+                    // 通常のQRコード
+                    sequenceMatch = data.match(/^SEQ:(\d+):(.*)/);
+                    if (sequenceMatch) {
+                        actualData = sequenceMatch[2];
+                    } else {
+                        // シーケンス番号がない場合はスキップ
+                        return;
+                    }
+                }
+
+                const sequenceNumber = parseInt(sequenceMatch[1]);
+
+                // 同じシーケンス番号は無視
+                if (sequenceNumber === this.lastProcessedSequence) {
+                    return;
+                }
+
+                if (isStartFlag) {
+                    // 開始フラグが見つかった場合、データをリセットして受信を開始
+                    this.isReceiving = true;
+                    this.receivedData = '';
+                    this.lastProcessedSequence = sequenceNumber;
+                    this.updateReaderStatus(`新しいデータ受信を開始しました（SEQ:${sequenceNumber}）`, 'success');
                     this.receivedData += actualData;
                     this.updateReceivedData();
                 } else if (this.isReceiving) {
-                    // 受信中の場合、通常のデータとして追加
-                    this.receivedData += data;
+                    // 受信中の場合、シーケンス番号をチェックして追加
+                    this.lastProcessedSequence = sequenceNumber;
+                    this.receivedData += actualData;
                     this.updateReceivedData();
                 }
             }
@@ -362,6 +396,7 @@
             clearData() {
                 this.receivedData = '';
                 this.isReceiving = false;
+                this.lastProcessedSequence = -1; // シーケンス番号もリセット
                 this.updateReceivedData();
                 this.updateReaderStatus('データをクリアしました', 'info');
             }
@@ -386,21 +421,38 @@
                 const startFlag = this.senderStartFlag.value;
 
                 this.qrChunks = [];
+                let sequenceNumber = 0;
 
-                // 最初のチャンクに開始フラグを付加
-                const firstChunk = startFlag + data.substring(0, chunkSize - startFlag.length);
+                // シーケンス番号のフォーマット用関数
+                const formatSequence = (num) => num.toString().padStart(3, '0');
+
+                // 最初のチャンクに開始フラグとシーケンス番号を付加
+                const seqPrefix = `SEQ:${formatSequence(sequenceNumber)}:`;
+                const availableSize = chunkSize - startFlag.length - seqPrefix.length;
+
+                if (availableSize <= 0) {
+                    this.updateSenderStatus('チャンクサイズが小さすぎます', 'error');
+                    return;
+                }
+
+                const firstChunk = startFlag + seqPrefix + data.substring(0, availableSize);
                 this.qrChunks.push(firstChunk);
+                sequenceNumber++;
 
                 // 残りのデータをチャンクに分割
-                let remainingData = data.substring(chunkSize - startFlag.length);
+                let remainingData = data.substring(availableSize);
                 while (remainingData.length > 0) {
-                    this.qrChunks.push(remainingData.substring(0, chunkSize));
-                    remainingData = remainingData.substring(chunkSize);
+                    const seqPrefix = `SEQ:${formatSequence(sequenceNumber)}:`;
+                    const availableSize = chunkSize - seqPrefix.length;
+                    const chunk = seqPrefix + remainingData.substring(0, availableSize);
+                    this.qrChunks.push(chunk);
+                    remainingData = remainingData.substring(availableSize);
+                    sequenceNumber++;
                 }
 
                 this.currentChunkIndex = 0;
                 this.flashBtn.disabled = false;
-                this.updateSenderStatus(`${this.qrChunks.length} 個のQRコードを生成しました`, 'success');
+                this.updateSenderStatus(`${this.qrChunks.length} 個のQRコード（シーケンス番号付き）を生成しました`, 'success');
                 this.updateProgress();
 
                 // 最初のQRコードを表示
