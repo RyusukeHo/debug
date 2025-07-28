@@ -437,7 +437,7 @@
                 return note + octave;
             }
 
-            // 大チャンク作成とキューイング
+            // 大チャンク作成（小さなグループも処理）
             createBigChunks() {
                 const bigChunkSize = parseInt(this.bigChunkSize.value);
                 const sortedIndices = Array.from(this.receivedChunks.keys()).sort((a, b) => a - b);
@@ -454,7 +454,8 @@
                             currentGroup = [];
                         }
                     } else {
-                        if (currentGroup.length >= 2) {
+                        // 連続でないチャンクが来た場合、現在のグループを処理
+                        if (currentGroup.length >= 1) { // 1つでも大チャンクとして処理
                             this.createBigChunk(currentGroup);
                         }
                         currentGroup = [index];
@@ -462,7 +463,8 @@
                     lastIndex = index;
                 }
 
-                if (currentGroup.length >= 2) {
+                // 最後のグループも処理（1つでも処理）
+                if (currentGroup.length >= 1) {
                     this.createBigChunk(currentGroup);
                 }
             }
@@ -498,7 +500,7 @@
                 }
             }
 
-            // 大チャンクの音符をキューに追加
+            // 大チャンクの音符をキューに追加（重複チェック付き）
             addBigChunkToQueue(bigChunk) {
                 const newNotes = [];
 
@@ -510,24 +512,36 @@
                                 pitch: note.pitch,
                                 duration: note.duration,
                                 velocity: note.velocity,
-                                chunkId: bigChunk.id
+                                chunkId: bigChunk.id,
+                                uniqueId: `${timeGroup.time}-${note.pitch}-${bigChunk.id}` // 重複防止用ID
                             });
                         });
                     });
                 });
 
-                // 新しい音符を時間順でキューに挿入
-                this.noteQueue.push(...newNotes);
-                this.noteQueue.sort((a, b) => a.time - b.time);
+                // 重複チェック：既存のキューや再生済みリストにない音符のみ追加
+                const existingIds = new Set([
+                    ...this.noteQueue.map(n => n.uniqueId),
+                    ...this.playedNotes.map(n => n.uniqueId)
+                ]);
 
-                // 総演奏時間を更新
-                if (this.noteQueue.length > 0) {
-                    const lastNote = this.noteQueue[this.noteQueue.length - 1];
-                    this.totalDuration = lastNote.time + (lastNote.duration || 0.5);
-                }
+                const uniqueNewNotes = newNotes.filter(note => !existingIds.has(note.uniqueId));
 
-                if (this.debugMode.checked) {
-                    console.log(`キューに${newNotes.length}音符追加。総キュー: ${this.noteQueue.length}音符`);
+                if (uniqueNewNotes.length > 0) {
+                    // 新しい音符をキューに追加
+                    this.noteQueue.push(...uniqueNewNotes);
+                    // 時間順でソート
+                    this.noteQueue.sort((a, b) => a.time - b.time);
+
+                    // 総演奏時間を更新
+                    if (this.noteQueue.length > 0) {
+                        const lastNote = this.noteQueue[this.noteQueue.length - 1];
+                        this.totalDuration = lastNote.time + (lastNote.duration || 0.5);
+                    }
+
+                    if (this.debugMode.checked) {
+                        console.log(`キューに${uniqueNewNotes.length}音符追加（重複除外：${newNotes.length - uniqueNewNotes.length}）。総キュー: ${this.noteQueue.length}音符`);
+                    }
                 }
             }
 
@@ -559,39 +573,38 @@
                     this.currentPlaybackTime = (Date.now() - this.playbackStartTime) / 1000;
 
                     // キューから再生すべき音符を取り出して実行
-                    const tolerance = 0.03;
+                    const tolerance = 0.1; // 許容範囲を100msに拡大（より寛容に）
                     let notesPlayed = 0;
 
                     // キューの先頭から現在時刻で再生すべき音符を探す
                     while (this.noteQueue.length > 0) {
                         const nextNote = this.noteQueue[0];
 
+                        // 再生時刻が来た、または少し過ぎた音符を処理
                         if (nextNote.time <= this.currentPlaybackTime + tolerance) {
-                            // キューから音符を取り出し
+                            // キューから音符を取り出し（必ず再生する）
                             const noteToPlay = this.noteQueue.shift();
 
-                            // 音符を再生
-                            if (noteToPlay.time >= this.currentPlaybackTime - tolerance) {
-                                try {
-                                    this.synth.triggerAttackRelease(
-                                        noteToPlay.pitch,
-                                        noteToPlay.duration || 0.5,
-                                        undefined,
-                                        noteToPlay.velocity || 0.8
-                                    );
-                                    notesPlayed++;
-                                } catch (error) {
-                                    if (this.debugMode.checked) {
-                                        console.error('音符再生エラー:', error);
-                                    }
+                            // 音符を必ず再生（時刻チェックを削除）
+                            try {
+                                this.synth.triggerAttackRelease(
+                                    noteToPlay.pitch,
+                                    noteToPlay.duration || 0.5,
+                                    undefined,
+                                    noteToPlay.velocity || 0.8
+                                );
+                                notesPlayed++;
+
+                                // 再生済みリストに追加
+                                this.playedNotes.push({
+                                    ...noteToPlay,
+                                    actualPlayTime: this.currentPlaybackTime
+                                });
+                            } catch (error) {
+                                if (this.debugMode.checked) {
+                                    console.error('音符再生エラー:', error);
                                 }
                             }
-
-                            // 再生済みリストに追加
-                            this.playedNotes.push({
-                                ...noteToPlay,
-                                actualPlayTime: this.currentPlaybackTime
-                            });
                         } else {
                             // 次の音符はまだ再生時刻ではない
                             break;
@@ -617,7 +630,7 @@
                         }
                     }
 
-                }, 15);
+                }, 10); // 10msに短縮してより高精度に
             }
 
             stopMidi() {
