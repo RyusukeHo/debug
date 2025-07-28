@@ -1,13 +1,3 @@
-this.chunkSeconds.addEventListener('input', () => {
-if (this.originalMidi) {
-this.displayMidiInfo(); // チャンク秒数変更時に予想値を更新
-}
-});
-this.flashFPS.addEventListener('input', () => {
-if (this.originalMidi) {
-this.displayMidiInfo(); // FPS変更時に予想値を更新
-}
-});
 <!DOCTYPE html>
 <html lang="ja">
 
@@ -154,6 +144,7 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
             padding: 15px;
             margin: 10px 0;
             font-family: monospace;
+            font-size: 12px;
         }
 
         .progress-bar {
@@ -200,7 +191,7 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
             <div class="controls">
                 <label>
                     <input type="checkbox" id="autoPlay" checked>
-                    自動再生（チャンク受信時）
+                    自動再生
                 </label>
             </div>
 
@@ -226,13 +217,9 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
 
             <div class="controls">
                 <span class="label">チャンク秒数:</span>
-                <input type="number" id="chunkSeconds" value="2" min="0.1" max="10" step="0.1">
+                <input type="number" id="chunkSeconds" value="1" min="0.5" max="10" step="0.1">
                 <span class="label">送信FPS:</span>
                 <input type="number" id="flashFPS" value="10" min="1" max="30">
-            </div>
-
-            <div class="controls" style="font-size: 12px; color: #666;">
-                推奨: 0.5-3秒 (0.1秒は非効率、5秒以上は遅延大)
             </div>
 
             <div class="controls">
@@ -269,12 +256,10 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 // 受信側
                 this.isScanning = false;
                 this.receivedChunks = [];
-                this.playedChunks = new Set(); // 再生済みチャンクを記録
-                this.midiData = null;
+                this.playedChunks = new Set();
                 this.isPlaying = false;
-                this.currentPlayTime = 0;
                 this.synth = null;
-                this.playbackInterval = null; // 定期的に新しいチャンクをチェック
+                this.playbackInterval = null;
 
                 // 送信側
                 this.originalMidi = null;
@@ -284,7 +269,6 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
 
                 this.initializeElements();
                 this.setupEventListeners();
-                // オーディオ初期化は遅延実行（ユーザーインタラクション後）
             }
 
             initializeElements() {
@@ -331,13 +315,15 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 try {
                     await Tone.start();
                     this.synth = new Tone.PolySynth(Tone.Synth).toDestination();
-                    console.log('Audio initialized successfully');
+                    console.log('Audio initialized');
+                    return true;
                 } catch (error) {
-                    console.error('Audio initialization failed:', error);
-                    this.updateReceiverStatus('オーディオ初期化エラー: ' + error.message, 'error');
+                    console.error('Audio init failed:', error);
+                    return false;
                 }
             }
 
+            // カメラ関連
             async startCamera() {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({
@@ -352,9 +338,9 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
 
                     this.startBtn.disabled = true;
                     this.stopBtn.disabled = false;
-                    this.updateReceiverStatus('カメラが開始されました', 'success');
+                    this.updateReceiverStatus('カメラ開始', 'success');
                 } catch (error) {
-                    this.updateReceiverStatus('カメラアクセスエラー: ' + error.message, 'error');
+                    this.updateReceiverStatus('カメラエラー: ' + error.message, 'error');
                 }
             }
 
@@ -366,7 +352,7 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 }
                 this.startBtn.disabled = false;
                 this.stopBtn.disabled = true;
-                this.updateReceiverStatus('カメラが停止されました', 'info');
+                this.updateReceiverStatus('カメラ停止', 'info');
             }
 
             startScanning() {
@@ -388,11 +374,27 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 requestAnimationFrame(() => this.scanFrame());
             }
 
+            // QRコード処理
             processQRCode(data) {
                 try {
-                    if (data.startsWith('MIDI:')) {
-                        const jsonData = data.substring(5);
-                        const chunkData = JSON.parse(jsonData);
+                    if (data.startsWith('M:')) {
+                        const compressedData = JSON.parse(data.substring(2));
+
+                        // 圧縮されたデータを復元
+                        const chunkData = {
+                            index: compressedData.i,
+                            total: compressedData.t,
+                            duration: compressedData.d,
+                            startTime: compressedData.s,
+                            endTime: compressedData.e,
+                            tempo: compressedData.b,
+                            notes: compressedData.n.map(note => ({
+                                pitch: note.p,
+                                time: note.t,
+                                duration: note.d,
+                                velocity: note.v
+                            }))
+                        };
 
                         // 重複チェック
                         if (this.receivedChunks.some(c => c.index === chunkData.index)) {
@@ -403,15 +405,15 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                         this.receivedChunks.sort((a, b) => a.index - b.index);
 
                         this.updateReceiverStatus(
-                            `チャンク ${chunkData.index + 1} を受信しました（${this.receivedChunks.length} 個）`,
+                            `チャンク ${chunkData.index + 1} 受信 (${this.receivedChunks.length}個)`,
                             'success'
                         );
 
                         this.updateMidiInfo();
-                        this.tryPlayNextChunk();
+                        this.tryAutoPlay();
                     }
                 } catch (error) {
-                    console.error('QRコード処理エラー:', error);
+                    console.error('QR処理エラー:', error);
                 }
             }
 
@@ -419,103 +421,86 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 if (this.receivedChunks.length === 0) return;
 
                 const totalChunks = this.receivedChunks[0].total || this.receivedChunks.length;
-                const info = `受信チャンク: ${this.receivedChunks.length} / ${totalChunks}\n`;
-                let details = '';
+                let info = `受信: ${this.receivedChunks.length} / ${totalChunks}\n`;
 
                 this.receivedChunks.forEach(chunk => {
-                    const timeInfo = chunk.startTime !== undefined ?
-                        ` (${chunk.startTime.toFixed(1)}s-${chunk.endTime.toFixed(1)}s)` : '';
-                    details += `チャンク ${chunk.index + 1}${timeInfo}: ${chunk.notes.length} 音符\n`;
+                    const played = this.playedChunks.has(chunk.index) ? '✓' : '○';
+                    info += `${played} チャンク${chunk.index + 1}: ${chunk.notes.length}音符\n`;
                 });
 
-                this.midiInfo.textContent = info + details;
+                this.midiInfo.textContent = info;
             }
 
-            async tryPlayNextChunk() {
-                if (this.receivedChunks.length === 0) return;
-
-                // どのチャンクでも受信したら再生開始可能
-                if (!this.isPlaying) {
+            async tryAutoPlay() {
+                if (this.autoPlay.checked && !this.isPlaying && this.receivedChunks.length > 0) {
+                    await this.playMidi();
+                } else if (!this.isPlaying) {
                     this.playBtn.disabled = false;
-
-                    // 自動再生設定があれば即座に開始
-                    if (this.autoPlay.checked && this.receivedChunks.length === 1) {
-                        await this.playMidi();
-                    }
                 }
             }
 
+            // 再生関連
             async playMidi() {
                 if (this.receivedChunks.length === 0) return;
 
-                // オーディオが初期化されていない場合は初期化
                 if (!this.synth) {
-                    await this.initializeAudio();
-                    if (!this.synth) {
-                        this.updateReceiverStatus('オーディオの初期化に失敗しました', 'error');
+                    const success = await this.initializeAudio();
+                    if (!success) {
+                        this.updateReceiverStatus('オーディオ初期化失敗', 'error');
                         return;
                     }
-                }
-
-                // ユーザーインタラクションによるTone.js開始
-                if (Tone.context.state !== 'running') {
-                    await Tone.start();
                 }
 
                 this.isPlaying = true;
                 this.playBtn.disabled = true;
                 this.stopPlayBtn.disabled = false;
-                this.updateReceiverStatus('MIDI再生中...', 'playing');
+                this.updateReceiverStatus('再生中...', 'playing');
 
-                // キューベース再生を開始
-                this.startQueueBasedPlayback();
+                this.startPlaybackLoop();
             }
 
-            startQueueBasedPlayback() {
-                // 定期的に新しいチャンクをチェックして再生
+            startPlaybackLoop() {
                 this.playbackInterval = setInterval(() => {
                     if (!this.isPlaying) return;
 
-                    // 未再生のチャンクを取得
+                    // 未再生チャンクを取得
                     const unplayedChunks = this.receivedChunks.filter(chunk =>
                         !this.playedChunks.has(chunk.index)
                     );
 
                     if (unplayedChunks.length === 0) return;
 
-                    // インデックス順にソート
+                    // 最小インデックスのチャンクを再生
                     unplayedChunks.sort((a, b) => a.index - b.index);
-
-                    // 最初の未再生チャンクを再生
                     const nextChunk = unplayedChunks[0];
+
                     this.playChunk(nextChunk);
                     this.playedChunks.add(nextChunk.index);
 
                     this.updateReceiverStatus(
-                        `チャンク ${nextChunk.index + 1} を再生中... (${this.playedChunks.size} 個再生済み)`,
+                        `チャンク ${nextChunk.index + 1} 再生中 (${this.playedChunks.size}個再生済み)`,
                         'playing'
                     );
 
-                    this.updateProgress(this.playedChunks.size, this.receivedChunks[0]?.total || this.receivedChunks.length);
+                    this.updateProgress();
+                    this.updateMidiInfo();
 
-                }, 100); // 100ms間隔でチェック
+                }, 100);
             }
 
-            async playChunk(chunk) {
-                // チャンク内の全音符を並行再生
+            playChunk(chunk) {
                 chunk.notes.forEach(note => {
                     setTimeout(() => {
                         if (this.isPlaying && this.synth) {
                             try {
-                                const velocity = note.velocity || 0.8;
                                 this.synth.triggerAttackRelease(
                                     note.pitch,
                                     note.duration,
                                     undefined,
-                                    velocity
+                                    note.velocity || 0.8
                                 );
                             } catch (error) {
-                                console.error('音符再生エラー:', error, note);
+                                console.error('音符再生エラー:', error);
                             }
                         }
                     }, note.time * 1000);
@@ -536,20 +521,28 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                     this.synth.releaseAll();
                 }
 
-                this.updateProgress(0, 1);
+                this.updateReceiverStatus('停止', 'info');
+                this.updateProgress(0);
             }
 
-            updateProgress(current, total) {
-                const percent = total > 0 ? (current / total) * 100 : 0;
+            updateProgress(value = null) {
+                if (value !== null) {
+                    this.playProgress.style.width = `${value}%`;
+                    return;
+                }
+
+                const total = this.receivedChunks[0]?.total || this.receivedChunks.length;
+                const played = this.playedChunks.size;
+                const percent = total > 0 ? (played / total) * 100 : 0;
                 this.playProgress.style.width = `${percent}%`;
             }
 
             clearData() {
                 this.receivedChunks = [];
-                this.playedChunks.clear(); // 再生済みチャンク記録もクリア
+                this.playedChunks.clear();
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
-                this.updateReceiverStatus('データをクリアしました', 'info');
+                this.updateReceiverStatus('データクリア', 'info');
             }
 
             updateReceiverStatus(message, type) {
@@ -561,7 +554,7 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
             async loadMidiFile() {
                 const file = this.midiFile.files[0];
                 if (!file) {
-                    this.updateSenderStatus('MIDIファイルを選択してください', 'error');
+                    this.updateSenderStatus('ファイルを選択してください', 'error');
                     return;
                 }
 
@@ -571,9 +564,9 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
 
                     this.displayMidiInfo();
                     this.generateBtn.disabled = false;
-                    this.updateSenderStatus('MIDIファイルを読み込みました', 'success');
+                    this.updateSenderStatus('MIDI読み込み完了', 'success');
                 } catch (error) {
-                    this.updateSenderStatus('MIDI読み込みエラー: ' + error.message, 'error');
+                    this.updateSenderStatus('読み込みエラー: ' + error.message, 'error');
                 }
             }
 
@@ -583,14 +576,19 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 const chunkDuration = parseFloat(this.chunkSeconds.value);
                 const estimatedChunks = Math.ceil(this.originalMidi.duration / chunkDuration);
                 const totalNotes = this.originalMidi.tracks.reduce((sum, track) => sum + track.notes.length, 0);
+                const fps = parseInt(this.flashFPS.value);
+
+                // データ圧縮効果の推定
+                const avgNotesPerChunk = totalNotes / estimatedChunks;
+                const estimatedChunkSize = 50 + (avgNotesPerChunk * 25); // 大まかな推定
 
                 const info = `
-ファイル名: ${this.midiFile.files[0].name}
-トラック数: ${this.originalMidi.tracks.length}
-演奏時間: ${this.originalMidi.duration.toFixed(2)} 秒
+ファイル: ${this.midiFile.files[0].name}
+演奏時間: ${this.originalMidi.duration.toFixed(1)}秒
 音符数: ${totalNotes}
-予想チャンク数: ${estimatedChunks} 個
-転送予想時間: ${(estimatedChunks / parseInt(this.flashFPS.value)).toFixed(1)} 秒
+予想チャンク数: ${estimatedChunks}
+予想チャンクサイズ: ~${Math.round(estimatedChunkSize)}文字
+転送予想時間: ${(estimatedChunks / fps).toFixed(1)}秒
                 `.trim();
 
                 this.senderMidiInfo.textContent = info;
@@ -602,31 +600,37 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 const chunkDuration = parseFloat(this.chunkSeconds.value);
                 this.qrChunks = [];
 
-                // MIDIデータを時間ベースでチャンクに分割
                 const chunks = this.splitMidiByTime(this.originalMidi, chunkDuration);
 
                 chunks.forEach((chunk, index) => {
+                    // データを圧縮（キー短縮）
                     const chunkData = {
-                        index: index,
-                        total: chunks.length,
-                        duration: chunkDuration,
-                        startTime: chunk.startTime,
-                        endTime: chunk.endTime,
-                        tempo: chunk.tempo,
-                        notes: chunk.notes
+                        i: index,                    // index → i
+                        t: chunks.length,           // total → t
+                        d: chunkDuration,           // duration → d
+                        s: chunk.startTime,         // startTime → s
+                        e: chunk.endTime,           // endTime → e
+                        b: chunk.tempo || 120,      // tempo → b (bpm)
+                        n: chunk.notes.map(note => ({
+                            p: note.pitch,          // pitch → p
+                            t: note.time,           // time → t
+                            d: note.duration,       // duration → d
+                            v: note.velocity || 0.8 // velocity → v
+                        }))
                     };
 
-                    const qrData = 'MIDI:' + JSON.stringify(chunkData);
+                    const qrData = 'M:' + JSON.stringify(chunkData);
                     this.qrChunks.push(qrData);
                 });
 
                 this.currentChunkIndex = 0;
                 this.flashBtn.disabled = false;
-                this.updateSenderStatus(`${this.qrChunks.length} 個のQRコードを生成しました`, 'success');
-                this.updateProgress();
+                this.updateSenderStatus(`${this.qrChunks.length}個のQRコード生成完了`, 'success');
+                this.updateProgressDisplay();
 
-                // 最初のQRコードを表示
-                this.displayQRCode(this.qrChunks[0]);
+                if (this.qrChunks.length > 0) {
+                    this.displayQRCode(this.qrChunks[0]);
+                }
             }
 
             splitMidiByTime(midi, chunkDuration) {
@@ -637,17 +641,14 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                     const endTime = currentTime + chunkDuration;
                     const chunkNotes = [];
 
-                    midi.tracks.forEach((track, trackIndex) => {
+                    midi.tracks.forEach(track => {
                         track.notes.forEach(note => {
                             if (note.time >= currentTime && note.time < endTime) {
                                 chunkNotes.push({
                                     pitch: note.name,
-                                    time: note.time - currentTime, // チャンク内相対時間
-                                    absoluteTime: note.time, // 楽曲全体での絶対時間
+                                    time: note.time - currentTime,
                                     duration: note.duration,
-                                    velocity: note.velocity,
-                                    track: trackIndex,
-                                    instrument: track.instrument ? track.instrument.name : 'acoustic_grand_piano'
+                                    velocity: note.velocity || 0.8
                                 });
                             }
                         });
@@ -656,9 +657,9 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                     if (chunkNotes.length > 0) {
                         chunks.push({
                             notes: chunkNotes,
-                            startTime: currentTime, // このチャンクの開始時間
+                            startTime: currentTime,
                             endTime: endTime,
-                            tempo: midi.header.tempos.length > 0 ? midi.header.tempos[0].bpm : 120
+                            tempo: midi.header.tempos[0]?.bpm || 120
                         });
                     }
 
@@ -670,14 +671,38 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
 
             displayQRCode(data) {
                 try {
+                    // データサイズに応じて設定を最適化
+                    const dataLength = data.length;
+                    let level = 'M';  // デフォルト
+                    let size = 350;
+
+                    if (dataLength < 200) {
+                        level = 'M';     // 小さなデータは読み取り性重視
+                        size = 400;      // 少し大きく
+                    } else if (dataLength < 500) {
+                        level = 'L';     // 中程度のデータは容量優先
+                        size = 350;
+                    } else {
+                        level = 'L';     // 大容量データは容量最優先
+                        size = 300;
+                    }
+
                     const qr = new QRious({
                         element: this.qrCanvas,
                         value: data,
-                        size: 300,
+                        size: size,
                         background: 'white',
                         foreground: 'black',
-                        level: 'L'
+                        level: level
                     });
+
+                    // デバッグ情報を表示
+                    if (this.currentChunkIndex === 0) {
+                        this.updateSenderStatus(
+                            `送信中 (${dataLength}文字, ${level}レベル, ${size}px)`,
+                            'success'
+                        );
+                    }
                 } catch (error) {
                     this.updateSenderStatus('QRコード生成エラー: ' + error.message, 'error');
                 }
@@ -697,7 +722,7 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
 
                 this.flashBtn.disabled = true;
                 this.stopFlashBtn.disabled = false;
-                this.updateSenderStatus(`${fps} FPS でフラッシュ送信中...`, 'success');
+                this.updateSenderStatus(`${fps}FPSで送信中...`, 'success');
             }
 
             stopFlashing() {
@@ -707,7 +732,7 @@ this.displayMidiInfo(); // FPS変更時に予想値を更新
                 }
                 this.flashBtn.disabled = false;
                 this.stopFlashBtn.disabled = true;
-                this.updateSenderStatus('フラッシュ送信を停止しました', 'info');
+                this.updateSenderStatus('送信停止', 'info');
             }
 
             updateProgressDisplay() {
