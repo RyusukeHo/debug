@@ -250,7 +250,11 @@
                 this.synth = null;
                 this.playbackStartTime = null;
                 this.currentPlaybackTime = 0;
-                this.totalDuration = 0;
+
+                // 時間ベース進捗管理システム
+                this.totalMusicDuration = 0;        // 楽曲全体の長さ（秒）
+                this.receivedMusicDuration = 0;     // 受信済み部分の長さ（秒）
+                this.estimatedTotalDuration = 0;    // 推定される楽曲全体の長さ
 
                 // キューイング再生用
                 this.noteQueue = []; // 未再生音符のキュー
@@ -519,7 +523,7 @@
                 }
             }
 
-            // 大チャンクの音符をキューに追加（重複チェック付き）
+            // 大チャンクの音符をキューに追加（時間ベース進捗対応）
             addBigChunkToQueue(bigChunk) {
                 const newNotes = [];
 
@@ -552,15 +556,63 @@
                     // 時間順でソート
                     this.noteQueue.sort((a, b) => a.time - b.time);
 
-                    // 総演奏時間を更新
-                    if (this.noteQueue.length > 0) {
-                        const lastNote = this.noteQueue[this.noteQueue.length - 1];
-                        this.totalDuration = lastNote.time + (lastNote.duration || 0.5);
-                    }
+                    // 時間ベース進捗情報を更新
+                    this.updateDurationInfo();
 
                     if (this.debugMode.checked) {
-                        console.log(`キューに${uniqueNewNotes.length}音符追加（重複除外：${newNotes.length - uniqueNewNotes.length}）。総キュー: ${this.noteQueue.length}音符`);
+                        console.log(`キューに${uniqueNewNotes.length}音符追加（重複除外：${newNotes.length - uniqueNewNotes.length}）。受信時間: ${this.receivedMusicDuration.toFixed(1)}s / 推定${this.estimatedTotalDuration.toFixed(1)}s`);
                     }
+                }
+            }
+
+            // 楽曲の時間情報を更新する関数
+            updateDurationInfo() {
+                // 受信済みチャンクから受信済み音楽時間を計算
+                if (this.receivedChunks.size > 0) {
+                    const sortedChunks = Array.from(this.receivedChunks.values())
+                        .sort((a, b) => a.index - b.index);
+
+                    // 連続して受信できている最後のチャンクを見つける
+                    let continuousEndTime = 0;
+                    let expectedIndex = 0;
+
+                    for (const chunk of sortedChunks) {
+                        if (chunk.index === expectedIndex) {
+                            continuousEndTime = chunk.endTime;
+                            expectedIndex++;
+                        } else {
+                            break; // 欠けているチャンクがあるので、そこで止める
+                        }
+                    }
+
+                    this.receivedMusicDuration = continuousEndTime;
+
+                    // 楽曲全体の長さを推定（受信済みチャンクから）
+                    if (sortedChunks.length > 0) {
+                        const totalChunks = sortedChunks[0].total;
+                        const receivedChunks = this.receivedChunks.size;
+
+                        if (receivedChunks > 0 && totalChunks > 0) {
+                            // 平均チャンク時間から全体を推定
+                            const avgChunkDuration = continuousEndTime / expectedIndex;
+                            this.estimatedTotalDuration = avgChunkDuration * totalChunks;
+                        }
+                    }
+                }
+
+                // キューの最後の音符から実際の演奏時間を取得
+                if (this.noteQueue.length > 0) {
+                    const lastNote = this.noteQueue[this.noteQueue.length - 1];
+                    this.totalMusicDuration = lastNote.time + (lastNote.duration || 0.5);
+                }
+
+                // 再生済み音符からも確認
+                if (this.playedNotes.length > 0) {
+                    const lastPlayedNote = this.playedNotes[this.playedNotes.length - 1];
+                    this.totalMusicDuration = Math.max(
+                        this.totalMusicDuration,
+                        lastPlayedNote.time + (lastPlayedNote.duration || 0.5)
+                    );
                 }
             }
 
@@ -648,6 +700,8 @@
                         console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符スケジュール済み, アクティブ音声: ${activeVoices}, キュー残り: ${this.noteQueue.length}`);
                     }
 
+                    // 時間情報を更新して進捗表示を正確に保つ
+                    this.updateDurationInfo();
                     this.updateProgress();
 
                     // 再生完了チェック
@@ -703,19 +757,43 @@
             }
 
             updateProgress() {
-                // 受信進捗
-                const totalChunks = this.receivedChunks.size > 0 ?
-                    Math.max(...Array.from(this.receivedChunks.values()).map(c => c.total)) : 0;
-                const receivedPercent = totalChunks > 0 ? (this.receivedChunks.size / totalChunks) * 100 : 0;
+                // 時間ベース進捗システム：より直感的で理解しやすい進捗表示
+
+                // 薄い水色のバー：連続して受信できている音楽時間の割合
+                // 「この時点まで途切れずに受信完了している」ことを表示
+                let receivedPercent = 0;
+                if (this.estimatedTotalDuration > 0) {
+                    receivedPercent = (this.receivedMusicDuration / this.estimatedTotalDuration) * 100;
+                    // 100%を超えないように制限（推定の誤差を考慮）
+                    receivedPercent = Math.min(100, receivedPercent);
+                }
                 this.receivedProgress.style.width = `${receivedPercent}%`;
 
-                // 再生進捗 (再生済み音符数 / 総音符数)
-                if (this.isPlaying && (this.noteQueue.length > 0 || this.playedNotes.length > 0)) {
-                    const totalNotes = this.noteQueue.length + this.playedNotes.length;
-                    const playedPercent = totalNotes > 0 ? (this.playedNotes.length / totalNotes) * 100 : 0;
-                    this.playProgress.style.width = `${Math.min(100, playedPercent)}%`;
-                } else {
-                    this.playProgress.style.width = '0%';
+                // 青いバー：実際の音楽再生進捗
+                // 「楽曲全体のうち、どこまで再生したか」を表示
+                let playPercent = 0;
+                if (this.isPlaying && this.totalMusicDuration > 0) {
+                    playPercent = (this.currentPlaybackTime / this.totalMusicDuration) * 100;
+                    // 受信済み時間を超えては再生できないので、上限を設定
+                    const maxPlayPercent = (this.receivedMusicDuration / this.totalMusicDuration) * 100;
+                    playPercent = Math.min(playPercent, maxPlayPercent, 100);
+                } else if (!this.isPlaying) {
+                    // 再生が停止している場合は0%に戻す
+                    playPercent = 0;
+                }
+                this.playProgress.style.width = `${playPercent}%`;
+
+                // デバッグ情報の表示（開発者にとって有用な情報）
+                if (this.debugMode.checked) {
+                    const debugInfo = {
+                        received: `${this.receivedMusicDuration.toFixed(1)}s`,
+                        estimated: `${this.estimatedTotalDuration.toFixed(1)}s`,
+                        playing: `${this.currentPlaybackTime.toFixed(1)}s`,
+                        total: `${this.totalMusicDuration.toFixed(1)}s`,
+                        receivedPercent: `${receivedPercent.toFixed(1)}%`,
+                        playPercent: `${playPercent.toFixed(1)}%`
+                    };
+                    console.log('進捗状況:', debugInfo);
                 }
             }
 
@@ -724,8 +802,13 @@
                 this.bigChunks.clear();
                 this.noteQueue.splice(0);
                 this.playedNotes.splice(0);
-                this.totalDuration = 0;
+
+                // 時間ベース進捗情報もリセット
+                this.totalMusicDuration = 0;
+                this.receivedMusicDuration = 0;
+                this.estimatedTotalDuration = 0;
                 this.lastProcessedChunkIndex = -1;
+
                 this.stopMidi();
                 this.updateProgress();
                 this.updateReceiverStatus('データクリア', 'info');
