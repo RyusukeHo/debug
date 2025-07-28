@@ -252,11 +252,11 @@
                 this.currentPlaybackTime = 0;
                 this.totalDuration = 0;
 
-                // 事前音声生成システム用
-                this.audioBuffers = new Map(); // bigChunkId -> 生成済み音声バッファ
-                this.isGeneratingAudio = false;
-                this.audioGenerationQueue = [];
+                // キューイング再生用
+                this.noteQueue = []; // 未再生音符のキュー
+                this.playedNotes = []; // 再生済み音符の履歴
                 this.playbackScheduler = null;
+                this.lastProcessedChunkIndex = -1;
 
                 // 送信側
                 this.originalMidi = null;
@@ -311,27 +311,32 @@
                 try {
                     await Tone.start();
 
-                    // 事前音声生成システム用のオーディオコンテキスト
-                    // ここでは音声バッファ生成用とリアルタイム再生用の両方を準備します
+                    // マスターボリュームコントロールを追加
+                    // これは「総音量の調整器」として機能します
+                    this.masterVolume = new Tone.Volume(-12); // -12dB（約1/4の音量）
 
-                    // バッファ再生用のプレイヤー
-                    this.bufferPlayer = new Tone.Player().toDestination();
-
-                    // 音声生成用のオフライン用シンセサイザー
-                    // これは実際に音を鳴らすのではなく、音声データを生成するためのものです
-                    this.offlineSynth = new Tone.PolySynth(Tone.Synth);
-
-                    // マスターボリューム制御
-                    this.masterVolume = new Tone.Volume(-6); // 少し音量を下げて安全性を確保
-                    this.bufferPlayer.connect(this.masterVolume);
+                    // 基本的なシンセサイザーにボリューム制御を追加
+                    this.synth = new Tone.PolySynth({
+                        maxPolyphony: 32, // 同時発音数を32に制限（重要な改善点）
+                        voice: Tone.Synth,
+                        options: {
+                            envelope: {
+                                attack: 0.005,  // 少し自然な立ち上がりに
+                                release: 0.3    // 少し自然な減衰に
+                            }
+                        }
+                    }).connect(this.masterVolume).toDestination();
 
                     if (this.debugMode.checked) {
-                        console.log('事前音声生成システム初期化完了');
+                        console.log('安定化オーディオシステム初期化完了 - 32音ポリフォニー, -12dBマスター音量');
                     }
                     return true;
                 } catch (error) {
                     console.error('Audio init failed:', error);
-                    return false;
+                    // フォールバック：最もシンプルな構成
+                    this.synth = new Tone.MonoSynth().toDestination();
+                    console.log('フォールバック：モノフォニックシンセサイザーで初期化');
+                    return true;
                 }
             }
 
@@ -505,8 +510,8 @@
                     console.log(`大チャンク作成: ${bigChunkId}`);
                 }
 
-                // 重要：大チャンクが作成されたら即座に音声生成を開始
-                this.generateAudioForBigChunk(bigChunk);
+                // 新しい大チャンクの音符をキューに追加
+                this.addBigChunkToQueue(bigChunk);
 
                 // 最初の大チャンクが完成したら再生開始
                 if (this.bigChunks.size === 1 && !this.isPlaying) {
@@ -514,66 +519,56 @@
                 }
             }
 
-            // 大チャンクの音声を事前生成する核心的なメソッド
-            async generateAudioForBigChunk(bigChunk) {
-                if (this.audioBuffers.has(bigChunk.id)) {
-                    return; // 既に生成済み
-                }
+            // 大チャンクの音符をキューに追加（重複チェック付き）
+            addBigChunkToQueue(bigChunk) {
+                const newNotes = [];
 
-                try {
-                    // 大チャンクの長さを計算（少し余裕を持たせる）
-                    const chunkDuration = bigChunk.endTime - bigChunk.startTime + 1.0;
-
-                    // オフライン音声コンテキストを作成
-                    // これは「録音スタジオ」のような環境で、実際に音を鳴らすことなく音声データを生成します
-                    const offlineContext = new Tone.Offline(() => {
-                        // オフライン環境でシンセサイザーを作成
-                        const offlineSynth = new Tone.PolySynth(Tone.Synth).toDestination();
-
-                        // 大チャンク内の全ての音符をオフライン環境でスケジュール
-                        bigChunk.chunks.forEach(chunk => {
-                            chunk.timeGroups.forEach(timeGroup => {
-                                timeGroup.notes.forEach(note => {
-                                    // 大チャンクの開始時刻を基準とした相対時刻を計算
-                                    const relativeTime = timeGroup.time - bigChunk.startTime;
-
-                                    // オフライン環境で音符をスケジュール
-                                    offlineSynth.triggerAttackRelease(
-                                        note.pitch,
-                                        note.duration || 0.5,
-                                        relativeTime,
-                                        note.velocity || 0.8
-                                    );
-                                });
+                bigChunk.chunks.forEach(chunk => {
+                    chunk.timeGroups.forEach(timeGroup => {
+                        timeGroup.notes.forEach(note => {
+                            newNotes.push({
+                                time: timeGroup.time,
+                                pitch: note.pitch,
+                                duration: note.duration,
+                                velocity: note.velocity,
+                                chunkId: bigChunk.id,
+                                uniqueId: `${timeGroup.time}-${note.pitch}-${bigChunk.id}` // 重複防止用ID
                             });
                         });
-                    }, chunkDuration);
-
-                    // オフライン音声生成を開始（これが時間のかかる処理）
-                    const audioBuffer = await offlineContext.render();
-
-                    // 生成された音声バッファを保存
-                    this.audioBuffers.set(bigChunk.id, {
-                        buffer: audioBuffer,
-                        startTime: bigChunk.startTime,
-                        endTime: bigChunk.endTime,
-                        duration: chunkDuration
                     });
+                });
 
-                    if (this.debugMode.checked) {
-                        console.log(`音声生成完了: ${bigChunk.id} (${chunkDuration.toFixed(2)}秒)`);
+                // 重複チェック：既存のキューや再生済みリストにない音符のみ追加
+                const existingIds = new Set([
+                    ...this.noteQueue.map(n => n.uniqueId),
+                    ...this.playedNotes.map(n => n.uniqueId)
+                ]);
+
+                const uniqueNewNotes = newNotes.filter(note => !existingIds.has(note.uniqueId));
+
+                if (uniqueNewNotes.length > 0) {
+                    // 新しい音符をキューに追加
+                    this.noteQueue.push(...uniqueNewNotes);
+                    // 時間順でソート
+                    this.noteQueue.sort((a, b) => a.time - b.time);
+
+                    // 総演奏時間を更新
+                    if (this.noteQueue.length > 0) {
+                        const lastNote = this.noteQueue[this.noteQueue.length - 1];
+                        this.totalDuration = lastNote.time + (lastNote.duration || 0.5);
                     }
 
-                } catch (error) {
-                    console.error(`音声生成エラー (${bigChunk.id}):`, error);
+                    if (this.debugMode.checked) {
+                        console.log(`キューに${uniqueNewNotes.length}音符追加（重複除外：${newNotes.length - uniqueNewNotes.length}）。総キュー: ${this.noteQueue.length}音符`);
+                    }
                 }
             }
 
-            // 事前生成された音声バッファを使った再生システム
+            // キューイング再生開始
             async startPlayback() {
-                if (this.isPlaying || this.audioBuffers.size === 0) return;
+                if (this.isPlaying || this.noteQueue.length === 0) return;
 
-                if (!this.bufferPlayer) {
+                if (!this.synth) {
                     const success = await this.initializeAudio();
                     if (!success) {
                         this.updateReceiverStatus('オーディオ初期化失敗', 'error');
@@ -586,89 +581,105 @@
                 this.playbackStartTime = Date.now();
                 this.currentPlaybackTime = 0;
 
-                this.updateReceiverStatus('事前生成音声で再生中...', 'playing');
-                this.startBufferPlaybackManager();
+                this.updateReceiverStatus('再生中...', 'playing');
+                this.startQueueProcessor();
             }
 
-            startBufferPlaybackManager() {
+            startQueueProcessor() {
                 this.playbackScheduler = setInterval(() => {
                     if (!this.isPlaying) return;
 
                     this.currentPlaybackTime = (Date.now() - this.playbackStartTime) / 1000;
 
-                    // 再生すべき音声バッファを探す
-                    this.audioBuffers.forEach((audioData, bigChunkId) => {
-                        const bufferStartTime = audioData.startTime;
-                        const bufferEndTime = audioData.endTime;
+                    // バッチ処理：一度に複数の音符を処理
+                    // これにより、タイミング精度が大幅に向上します
+                    const lookAheadTime = 0.2; // 200ms先まで事前スケジュール
+                    const tolerance = 0.1;     // 許容範囲を広めに設定
+                    const maxNotesPerBatch = 50; // 一度に処理する音符数を制限
 
-                        // このバッファが再生されるべき時刻かチェック
-                        if (!audioData.isPlaying &&
-                            this.currentPlaybackTime >= bufferStartTime - 0.1 &&
-                            this.currentPlaybackTime < bufferEndTime + 0.5) {
+                    let notesInBatch = 0;
+                    let notesPlayed = 0;
 
-                            // バッファを再生開始
-                            this.playAudioBuffer(bigChunkId, audioData);
+                    // バッチ処理：条件に合う音符をまとめて処理
+                    while (this.noteQueue.length > 0 && notesInBatch < maxNotesPerBatch) {
+                        const nextNote = this.noteQueue[0];
+
+                        // 事前スケジュール範囲内の音符を処理
+                        if (nextNote.time <= this.currentPlaybackTime + lookAheadTime + tolerance) {
+                            const noteToPlay = this.noteQueue.shift();
+                            notesInBatch++;
+
+                            // 音符を再生するタイミングを計算
+                            const playDelay = Math.max(0, noteToPlay.time - this.currentPlaybackTime);
+
+                            // 音量を動的に調整（同時発音数に応じて音量を下げる）
+                            const adjustedVelocity = this.calculateSafeVelocity(noteToPlay.velocity || 0.8);
+
+                            try {
+                                // Tone.jsのスケジューリング機能を使用
+                                // これにより、より正確なタイミングで音符を再生できます
+                                this.synth.triggerAttackRelease(
+                                    noteToPlay.pitch,
+                                    noteToPlay.duration || 0.5,
+                                    "+" + playDelay.toFixed(3), // 相対的な時間指定
+                                    adjustedVelocity
+                                );
+                                notesPlayed++;
+
+                                this.playedNotes.push({
+                                    ...noteToPlay,
+                                    actualPlayTime: this.currentPlaybackTime + playDelay,
+                                    scheduledDelay: playDelay
+                                });
+                            } catch (error) {
+                                if (this.debugMode.checked) {
+                                    console.error('音符再生エラー:', error, 'pitch:', noteToPlay.pitch);
+                                }
+                            }
+                        } else {
+                            // まだ処理時刻ではない音符に到達
+                            break;
                         }
-                    });
+                    }
+
+                    // パフォーマンス情報の表示（デバッグ時）
+                    if (this.debugMode.checked && notesPlayed > 0) {
+                        const activeVoices = this.synth.activeVoices ? this.synth.activeVoices : 'unknown';
+                        console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符スケジュール済み, アクティブ音声: ${activeVoices}, キュー残り: ${this.noteQueue.length}`);
+                    }
 
                     this.updateProgress();
 
                     // 再生完了チェック
-                    if (this.allBuffersCompleted()) {
-                        setTimeout(() => {
-                            if (this.allBuffersCompleted()) {
-                                this.updateReceiverStatus('再生完了', 'success');
-                            }
-                        }, 2000);
+                    if (this.noteQueue.length === 0 && this.receivedChunks.size > 0) {
+                        const totalChunks = Math.max(...Array.from(this.receivedChunks.values()).map(c => c.total));
+                        if (this.receivedChunks.size >= totalChunks) {
+                            setTimeout(() => {
+                                if (this.noteQueue.length === 0) {
+                                    this.updateReceiverStatus('再生完了', 'success');
+                                }
+                            }, 2000);
+                        }
                     }
 
-                }, 100); // 100ms間隔でチェック（負荷軽減）
+                }, 50); // 50msに変更（負荷軽減とタイミング精度のバランス）
             }
 
-            // 音声バッファを実際に再生する
-            async playAudioBuffer(bigChunkId, audioData) {
-                try {
-                    // 新しいプレイヤーインスタンスを作成（Tone.jsの制限回避）
-                    const player = new Tone.Player(audioData.buffer);
-                    player.connect(this.masterVolume);
+            // 安全な音量計算：同時発音数を考慮した動的音量調整
+            calculateSafeVelocity(originalVelocity) {
+                // 現在のアクティブな音声数を推定
+                // （実際のTone.jsからは正確な数値を取得できないため、推定値を使用）
+                const estimatedActiveVoices = Math.min(32, this.playedNotes.length);
 
-                    // 再生開始の遅延計算（より正確なタイミング制御）
-                    const expectedStartTime = audioData.startTime;
-                    const actualDelay = Math.max(0, expectedStartTime - this.currentPlaybackTime);
+                // 同時発音数に応じて音量を調整
+                // 多くの音が同時に鳴るほど、個々の音量を下げる
+                const voiceReductionFactor = Math.max(0.1, 1.0 / Math.sqrt(estimatedActiveVoices + 1));
 
-                    // バッファ再生開始
-                    player.start("+" + actualDelay.toFixed(3));
+                // 元の音量に調整倍率を適用
+                const adjustedVelocity = originalVelocity * voiceReductionFactor;
 
-                    // 再生状態を記録
-                    audioData.isPlaying = true;
-                    audioData.player = player;
-                    audioData.actualStartTime = this.currentPlaybackTime + actualDelay;
-
-                    if (this.debugMode.checked) {
-                        console.log(`バッファ再生開始: ${bigChunkId}, 遅延: ${actualDelay.toFixed(3)}s`);
-                    }
-
-                    // 再生完了時のクリーンアップ
-                    setTimeout(() => {
-                        player.dispose();
-                        audioData.isCompleted = true;
-                    }, (audioData.duration + actualDelay + 1) * 1000);
-
-                } catch (error) {
-                    console.error(`バッファ再生エラー (${bigChunkId}):`, error);
-                }
-            }
-
-            // 全てのバッファ再生が完了したかチェック
-            allBuffersCompleted() {
-                if (this.audioBuffers.size === 0) return false;
-
-                const totalChunks = this.receivedChunks.size > 0 ?
-                    Math.max(...Array.from(this.receivedChunks.values()).map(c => c.total)) : 0;
-
-                // 全てのチャンクを受信し、全てのバッファが再生完了している
-                return this.receivedChunks.size >= totalChunks &&
-                    Array.from(this.audioBuffers.values()).every(audioData => audioData.isCompleted);
+                // 最終的な音量を安全な範囲に制限
+                return Math.max(0.05, Math.min(0.7, adjustedVelocity));
             }
 
             stopMidi() {
@@ -680,20 +691,13 @@
                     this.playbackScheduler = null;
                 }
 
-                // 再生中の全ての音声バッファを停止
-                this.audioBuffers.forEach((audioData, bigChunkId) => {
-                    if (audioData.player) {
-                        try {
-                            audioData.player.stop();
-                            audioData.player.dispose();
-                        } catch (error) {
-                            // プレイヤーが既に停止している場合のエラーは無視
-                        }
-                    }
-                    audioData.isPlaying = false;
-                    audioData.isCompleted = false;
-                });
+                if (this.synth) {
+                    this.synth.releaseAll();
+                }
 
+                // キューと再生履歴をリセット
+                this.noteQueue.splice(0); // キューをクリア
+                this.playedNotes.splice(0); // 再生履歴もクリア
                 this.updateReceiverStatus('停止', 'info');
                 this.updateProgress();
             }
@@ -705,12 +709,11 @@
                 const receivedPercent = totalChunks > 0 ? (this.receivedChunks.size / totalChunks) * 100 : 0;
                 this.receivedProgress.style.width = `${receivedPercent}%`;
 
-                // 再生進捗（音声バッファベース）
-                if (this.isPlaying && this.audioBuffers.size > 0) {
-                    // 再生完了したバッファの割合を計算
-                    const completedBuffers = Array.from(this.audioBuffers.values()).filter(audioData => audioData.isCompleted).length;
-                    const playPercent = this.audioBuffers.size > 0 ? (completedBuffers / this.audioBuffers.size) * 100 : 0;
-                    this.playProgress.style.width = `${Math.min(100, playPercent)}%`;
+                // 再生進捗 (再生済み音符数 / 総音符数)
+                if (this.isPlaying && (this.noteQueue.length > 0 || this.playedNotes.length > 0)) {
+                    const totalNotes = this.noteQueue.length + this.playedNotes.length;
+                    const playedPercent = totalNotes > 0 ? (this.playedNotes.length / totalNotes) * 100 : 0;
+                    this.playProgress.style.width = `${Math.min(100, playedPercent)}%`;
                 } else {
                     this.playProgress.style.width = '0%';
                 }
@@ -719,20 +722,10 @@
             clearData() {
                 this.receivedChunks.clear();
                 this.bigChunks.clear();
-
-                // 音声バッファのクリーンアップ
-                this.audioBuffers.forEach((audioData, bigChunkId) => {
-                    if (audioData.player) {
-                        try {
-                            audioData.player.dispose();
-                        } catch (error) {
-                            // 既に破棄済みの場合のエラーは無視
-                        }
-                    }
-                });
-                this.audioBuffers.clear();
-
+                this.noteQueue.splice(0);
+                this.playedNotes.splice(0);
                 this.totalDuration = 0;
+                this.lastProcessedChunkIndex = -1;
                 this.stopMidi();
                 this.updateProgress();
                 this.updateReceiverStatus('データクリア', 'info');
