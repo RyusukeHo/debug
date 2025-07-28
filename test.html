@@ -263,7 +263,8 @@
                 this.isPlaying = false;
                 this.synth = null;
                 this.playbackInterval = null;
-                this.isPlayingChunk = false; // 現在チャンク再生中フラグ
+                this.isPlayingChunk = false;
+                this.preparedChunks = new Map(); // 事前準備済みチャンクデータ
 
                 // 送信側
                 this.originalMidi = null;
@@ -431,7 +432,8 @@
 
                 this.receivedChunks.forEach(chunk => {
                     const played = this.playedChunks.has(chunk.index) ? '✓' : '○';
-                    info += `${played} チャンク${chunk.index + 1}: ${chunk.notes.length}音符\n`;
+                    const prepared = this.preparedChunks.has(chunk.index) ? '🚀' : '⏳';
+                    info += `${played}${prepared} チャンク${chunk.index + 1}: ${chunk.notes.length}音符\n`;
                 });
 
                 this.midiInfo.textContent = info;
@@ -485,6 +487,23 @@
                 }, 50); // 50ms間隔でチェック
             }
 
+            prepareChunk(chunk) {
+                // チャンクデータを事前準備（再生用に最適化）
+                const preparedNotes = chunk.notes.map(note => ({
+                    pitch: note.pitch,
+                    duration: note.duration,
+                    velocity: note.velocity,
+                    playTime: Date.now() // 準備時刻を記録
+                }));
+
+                this.preparedChunks.set(chunk.index, {
+                    ...chunk,
+                    notes: preparedNotes,
+                    prepared: true,
+                    preparedAt: Date.now()
+                });
+            }
+
             async playChunkSequentially(chunk) {
                 this.isPlayingChunk = true;
                 this.playedChunks.add(chunk.index);
@@ -495,11 +514,12 @@
                 );
 
                 this.updateProgress();
-                this.updateReceivedProgress(); // 受信プログレスも更新
+                this.updateReceivedProgress();
                 this.updateMidiInfo();
 
-                // チャンク内の音符を再生
-                await this.playChunk(chunk);
+                // 事前準備済みデータを使用
+                const preparedChunk = this.preparedChunks.get(chunk.index) || chunk;
+                await this.playChunkImmediate(preparedChunk);
 
                 // チャンクの再生時間分待機
                 await new Promise(resolve => setTimeout(resolve, chunk.duration * 1000));
@@ -507,30 +527,29 @@
                 this.isPlayingChunk = false;
             }
 
-            async playChunk(chunk) {
-                // チャンク内の全音符を並行再生（チャンク内では同時再生OK）
-                const promises = chunk.notes.map(note => {
-                    return new Promise(resolve => {
-                        setTimeout(() => {
-                            if (this.isPlaying && this.synth) {
-                                try {
-                                    this.synth.triggerAttackRelease(
-                                        note.pitch,
-                                        note.duration,
-                                        undefined,
-                                        note.velocity || 0.8
-                                    );
-                                } catch (error) {
-                                    console.error('音符再生エラー:', error);
-                                }
-                            }
-                            resolve();
-                        }, note.time * 1000);
-                    });
-                });
+            async playChunkImmediate(chunk) {
+                // 事前準備済みデータで即座に再生（ラグ最小化）
+                const startTime = Date.now();
 
-                // チャンク内の全音符の再生開始を待つ
-                await Promise.all(promises);
+                chunk.notes.forEach(note => {
+                    const timeout = note.time * 1000;
+
+                    setTimeout(() => {
+                        if (this.isPlaying && this.synth) {
+                            try {
+                                // 即座に発音（事前準備済みなので処理が高速）
+                                this.synth.triggerAttackRelease(
+                                    note.pitch,
+                                    note.duration,
+                                    undefined,
+                                    note.velocity
+                                );
+                            } catch (error) {
+                                console.error('音符再生エラー:', error);
+                            }
+                        }
+                    }, timeout);
+                });
             }
 
             stopMidi() {
@@ -579,10 +598,11 @@
             clearData() {
                 this.receivedChunks = [];
                 this.playedChunks.clear();
+                this.preparedChunks.clear(); // 事前準備データもクリア
                 this.isPlayingChunk = false;
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
-                this.updateReceivedProgress(); // 受信プログレスもクリア
+                this.updateReceivedProgress();
                 this.updateReceiverStatus('データクリア', 'info');
             }
 
@@ -712,20 +732,23 @@
 
             displayQRCode(data) {
                 try {
-                    // データサイズに応じて設定を最適化
+                    // データサイズに応じて設定を最適化（誤り訂正レベルを上げる）
                     const dataLength = data.length;
-                    let level = 'M';  // デフォルト
+                    let level = 'H';  // デフォルトをHigh(最高)に
                     let size = 350;
 
                     if (dataLength < 200) {
-                        level = 'M';     // 小さなデータは読み取り性重視
-                        size = 400;      // 少し大きく
-                    } else if (dataLength < 500) {
-                        level = 'L';     // 中程度のデータは容量優先
+                        level = 'H';     // 小さなデータも最高レベル
+                        size = 400;      // 大きく表示
+                    } else if (dataLength < 400) {
+                        level = 'Q';     // 中程度データはQuartile
+                        size = 380;
+                    } else if (dataLength < 600) {
+                        level = 'M';     // 大きなデータはMedium
                         size = 350;
                     } else {
-                        level = 'L';     // 大容量データは容量最優先
-                        size = 300;
+                        level = 'L';     // 超大容量のみLow
+                        size = 320;
                     }
 
                     const qr = new QRious({
