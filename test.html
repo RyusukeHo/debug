@@ -374,11 +374,6 @@
             }
 
             processQRCode(data) {
-                // 既に受信完了している場合は何もしない
-                if (this.isCompleted) {
-                    return;
-                }
-
                 const startFlag = this.startFlag.value;
                 const endFlag = this.endFlag.value;
 
@@ -390,6 +385,11 @@
                         this.updateReaderStatus('データ受信が完了しました！', 'complete');
                         return;
                     }
+                }
+
+                // 既に受信完了している場合は新しい開始も無視
+                if (this.isCompleted) {
+                    return;
                 }
 
                 // シーケンス番号を抽出
@@ -428,16 +428,29 @@
                 }
 
                 if (isStartFlag) {
-                    // 開始フラグが見つかった場合、データをリセットして受信を開始
-                    this.isReceiving = true;
-                    this.isCompleted = false;
-                    this.waitingForNextCycle = false;
-                    this.receivedData = '';
-                    this.lastProcessedSequence = sequenceNumber;
-                    this.expectedSequence = sequenceNumber + 1;
-                    this.updateReaderStatus(`新しいデータ受信を開始しました（SEQ:${sequenceNumber}）`, 'success');
-                    this.receivedData += actualData;
-                    this.updateReceivedData();
+                    // 開始フラグが見つかった場合
+                    if (this.waitingForNextCycle) {
+                        // 次の周期を待っていた場合、新しい周期として受信開始
+                        this.isReceiving = true;
+                        this.waitingForNextCycle = false;
+                        this.receivedData = '';
+                        this.lastProcessedSequence = sequenceNumber;
+                        this.expectedSequence = sequenceNumber + 1;
+                        this.updateReaderStatus(`新しい周期でデータ受信を再開しました（SEQ:${sequenceNumber}）`, 'success');
+                        this.receivedData += actualData;
+                        this.updateReceivedData();
+                    } else if (!this.isReceiving) {
+                        // 初回受信開始
+                        this.isReceiving = true;
+                        this.isCompleted = false;
+                        this.receivedData = '';
+                        this.lastProcessedSequence = sequenceNumber;
+                        this.expectedSequence = sequenceNumber + 1;
+                        this.updateReaderStatus(`新しいデータ受信を開始しました（SEQ:${sequenceNumber}）`, 'success');
+                        this.receivedData += actualData;
+                        this.updateReceivedData();
+                    }
+                    // 既に受信中の場合は、「そのまま続行」モードなら無視、「次の周期を待つ」モードなら上記の処理
                 } else if (this.waitingForNextCycle) {
                     // 次の周期を待っている場合は開始フラグ以外は無視
                     return;
@@ -454,7 +467,7 @@
                         const isWaitMode = this.waitMode.checked;
 
                         if (isWaitMode) {
-                            // 次の周期を待つモード
+                            // 次の周期を待つモード - 受信を中断して次の周期を待つ
                             this.waitingForNextCycle = true;
                             this.isReceiving = false;
                             this.updateReaderStatus(
@@ -462,7 +475,7 @@
                                 'error'
                             );
                         } else {
-                            // そのまま続行モード
+                            // そのまま続行モード - 欠落があってもそのまま進める
                             this.lastProcessedSequence = sequenceNumber;
                             this.expectedSequence = sequenceNumber + 1;
                             this.receivedData += actualData;
@@ -594,18 +607,15 @@
 
                     this.currentChunkIndex++;
 
-                    // 全てのQRコードを送信完了した場合
+                    // 全てのQRコードを送信したらループして最初から
                     if (this.currentChunkIndex >= this.qrChunks.length) {
-                        this.stopFlashing();
-                        this.flashCompleted = true;
-                        this.updateSenderStatus('送信完了！ENDフラグを送信しました', 'complete');
-                        return;
+                        this.currentChunkIndex = 0; // 最初から再開
                     }
                 }, interval);
 
                 this.flashBtn.disabled = true;
                 this.stopFlashBtn.disabled = false;
-                this.updateSenderStatus(`${fps} FPS でフラッシュ送信中...`, 'success');
+                this.updateSenderStatus(`${fps} FPS でフラッシュ送信中（ループ）...`, 'success');
             }
 
             stopFlashing() {
@@ -615,10 +625,7 @@
                 }
                 this.flashBtn.disabled = false;
                 this.stopFlashBtn.disabled = true;
-
-                if (!this.flashCompleted) {
-                    this.updateSenderStatus('フラッシュ送信を停止しました', 'info');
-                }
+                this.updateSenderStatus('フラッシュ送信を停止しました', 'info');
             }
 
             updateSenderStatus(message, type) {
