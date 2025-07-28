@@ -516,7 +516,7 @@
             document.getElementById('scanButton').textContent = '🔍 スキャン開始';
         }
         
-        // フレーム解析（4色QR専用）
+        // フレーム解析（ハイブリッド方式）
         function analyzeFrame() {
             const video = document.getElementById('video');
             const canvas = document.getElementById('canvas');
@@ -526,34 +526,274 @@
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0);
             
-            try {
-                // 4色QRコードを直接検出
-                const colorQRResult = detectColorQR(canvas, ctx);
-                
-                if (colorQRResult.found) {
-                    displayResult({
-                        standard: null,
-                        color: colorQRResult.data,
-                        gridSize: colorQRResult.size,
-                        confidence: colorQRResult.confidence,
-                        detectionMethod: '4色QR直接検出'
-                    });
-                    stopScanning();
-                    return;
-                }
-                
-                // フォールバック: 標準QRとして検出を試行
-                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                const standardQR = jsQR(imageData.data, imageData.width, imageData.height);
-                
-                if (standardQR) {
-                    // 標準QRが見つかった場合、その位置で4色解析を試行
-                    analyzeColorQRFromStandard(canvas, ctx, standardQR);
-                    stopScanning();
-                }
-            } catch (error) {
-                console.log('検出エラー:', error.message);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            
+            // 標準QRで位置検出（jsQRの位置検出機能を活用）
+            const standardQR = jsQR(imageData.data, imageData.width, imageData.height);
+            
+            if (standardQR) {
+                // 位置情報は標準QRから取得、データ読み取りは4色対応
+                analyzeHybridColorQR(canvas, ctx, standardQR);
+                stopScanning();
             }
+        }
+        
+        // ハイブリッド4色QR解析（位置検出は標準、データ読み取りは4色）
+        function analyzeHybridColorQR(canvas, ctx, qrResult) {
+            try {
+                const corners = [
+                    qrResult.location.topLeftCorner,
+                    qrResult.location.topRightCorner,
+                    qrResult.location.bottomRightCorner,
+                    qrResult.location.bottomLeftCorner
+                ];
+                
+                // QRコードのサイズ推定
+                const width = Math.sqrt(
+                    Math.pow(corners[1].x - corners[0].x, 2) + 
+                    Math.pow(corners[1].y - corners[0].y, 2)
+                );
+                
+                const moduleSize = width / 21; // 標準的な21x21として仮定
+                const gridSize = Math.round(width / moduleSize);
+                
+                // 透視変換でQRコードを正規化
+                const normalizedQR = extractNormalizedQR(canvas, ctx, corners, gridSize);
+                
+                // 標準QRとしてデコード
+                const standardData = qrResult.data;
+                
+                // 4色QRとしてデコード
+                const colorData = analyzeColorGrid(normalizedQR, gridSize);
+                const colorDecodedText = decodeHybridColorQR(colorData, gridSize);
+                
+                // 結果比較表示
+                displayHybridResult({
+                    standard: {
+                        data: standardData,
+                        method: '標準QR (jsQR)'
+                    },
+                    color: {
+                        data: colorDecodedText,
+                        method: '4色データ読み取り',
+                        confidence: calculateColorConfidence(colorData),
+                        colorStats: getColorStats(colorData)
+                    },
+                    gridSize: gridSize,
+                    moduleSize: moduleSize.toFixed(2),
+                    corners: corners
+                });
+                
+            } catch (error) {
+                displayHybridResult({
+                    standard: { data: qrResult.data, method: '標準QR (jsQR)' },
+                    color: { data: null, error: error.message },
+                    gridSize: null
+                });
+            }
+        }
+        
+        // ハイブリッド4色QRデコード（位置検出は標準QR、データは4色）
+        function decodeHybridColorQR(colorGrid, gridSize) {
+            if (!colorGrid || colorGrid.length === 0) return null;
+            
+            let binaryString = '';
+            
+            // データ領域を特定（標準QRの構造を参考にしつつ4色で読み取り）
+            for (let y = 0; y < gridSize; y++) {
+                for (let x = 0; x < gridSize; x++) {
+                    // 標準QRの機能パターンを避ける
+                    if (isStandardQRFunctionalArea(x, y, gridSize)) {
+                        continue; // 機能パターン領域はスキップ
+                    }
+                    
+                    // データ領域のみ4色として解釈
+                    if (y < colorGrid.length && x < colorGrid[y].length) {
+                        const colorIndex = colorGrid[y][x];
+                        // 4色を2ビットに変換
+                        binaryString += colorIndex.toString(2).padStart(2, '0');
+                    }
+                }
+            }
+            
+            // バイナリを文字列に変換
+            let resultText = '';
+            for (let i = 0; i < binaryString.length; i += 8) {
+                const byte = binaryString.substr(i, 8);
+                if (byte.length === 8) {
+                    const charCode = parseInt(byte, 2);
+                    if (charCode === 0) {
+                        break; // 終端マーカー
+                    }
+                    if (charCode >= 32 && charCode <= 126) {
+                        resultText += String.fromCharCode(charCode);
+                    }
+                }
+            }
+            
+            return resultText.length > 0 ? resultText : null;
+        }
+        
+        // 標準QRの機能領域判定
+        function isStandardQRFunctionalArea(x, y, size) {
+            // 位置検出パターン
+            if ((x < 9 && y < 9) || 
+                (x >= size - 8 && y < 9) || 
+                (x < 9 && y >= size - 8)) {
+                return true;
+            }
+            
+            // タイミングパターン
+            if (x === 6 || y === 6) {
+                return true;
+            }
+            
+            // アライメントパターン（簡易判定）
+            if (size >= 25) {
+                const centers = getAlignmentPatternCenters(size);
+                for (let center of centers) {
+                    if (Math.abs(x - center.x) <= 2 && Math.abs(y - center.y) <= 2) {
+                        return true;
+                    }
+                }
+            }
+            
+            // フォーマット情報
+            if ((x < 9 && y === 8) || (x === 8 && y < 9) ||
+                (x === 8 && y >= size - 8) || (x >= size - 8 && y === 8)) {
+                return true;
+            }
+            
+            return false;
+        }
+        
+        // アライメントパターンの中心座標取得
+        function getAlignmentPatternCenters(size) {
+            // 簡易版：実際はもっと複雑な計算が必要
+            if (size < 25) return [];
+            
+            const centers = [];
+            if (size >= 25 && size < 45) {
+                centers.push({ x: Math.floor(size/2), y: Math.floor(size/2) });
+            }
+            return centers;
+        }
+        
+        // 4色の信頼度計算
+        function calculateColorConfidence(colorGrid) {
+            if (!colorGrid || colorGrid.length === 0) return 0;
+            
+            let validColors = 0;
+            let totalCells = 0;
+            let colorCounts = [0, 0, 0, 0];
+            
+            for (let row of colorGrid) {
+                for (let cell of row) {
+                    if (cell >= 0 && cell <= 3) {
+                        validColors++;
+                        colorCounts[cell]++;
+                    }
+                    totalCells++;
+                }
+            }
+            
+            // 4色すべてが使用されているかチェック
+            const colorsUsed = colorCounts.filter(count => count > 0).length;
+            const colorDiversity = colorsUsed / 4;
+            
+            const validRatio = totalCells > 0 ? validColors / totalCells : 0;
+            
+            return Math.floor((validRatio * 0.7 + colorDiversity * 0.3) * 100);
+        }
+        
+        // ハイブリッド結果表示
+        function displayHybridResult(result) {
+            const resultDiv = document.getElementById('result');
+            let html = '<h3>🔄 ハイブリッド解析結果</h3>';
+            
+            // 標準QR結果
+            if (result.standard && result.standard.data) {
+                html += `
+                    <div style="background: #e7f3ff; padding: 15px; border-radius: 6px; margin: 10px 0; border-left: 4px solid #2196F3;">
+                        <h4>📋 標準QRコード読み取り</h4>
+                        <p><strong>データ:</strong></p>
+                        <div style="background: white; padding: 10px; border-radius: 4px; word-break: break-all; font-family: monospace;">
+                            ${result.standard.data}
+                        </div>
+                        <small>検出方法: ${result.standard.method}</small>
+                    </div>
+                `;
+            }
+            
+            // 4色QR結果
+            if (result.color) {
+                if (result.color.data) {
+                    html += `
+                        <div style="background: #e8f5e8; padding: 15px; border-radius: 6px; margin: 10px 0; border-left: 4px solid #4CAF50;">
+                            <h4>🎨 4色データ読み取り</h4>
+                            <p><strong>データ:</strong></p>
+                            <div style="background: white; padding: 10px; border-radius: 4px; word-break: break-all; font-family: monospace;">
+                                ${result.color.data}
+                            </div>
+                            <small>
+                                検出方法: ${result.color.method} | 
+                                信頼度: ${result.color.confidence}%
+                            </small>
+                        </div>
+                    `;
+                    
+                    // 色使用統計
+                    if (result.color.colorStats) {
+                        html += `
+                            <div style="background: #fff3e0; padding: 15px; border-radius: 6px; margin: 10px 0;">
+                                <h5>📊 色使用統計</h5>
+                                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                        `;
+                        
+                        result.color.colorStats.forEach((stat, i) => {
+                            const colorStyle = `background: rgb(${colors[i][0]}, ${colors[i][1]}, ${colors[i][2]}); color: ${i === 1 ? 'black' : 'white'};`;
+                            html += `
+                                <div style="padding: 5px 10px; border-radius: 4px; ${colorStyle}">
+                                    ${stat.color}: ${stat.percentage}%
+                                </div>
+                            `;
+                        });
+                        
+                        html += '</div></div>';
+                    }
+                } else if (result.color.error) {
+                    html += `
+                        <div style="background: #ffebee; padding: 15px; border-radius: 6px; margin: 10px 0; border-left: 4px solid #f44336;">
+                            <h4>❌ 4色読み取りエラー</h4>
+                            <p>${result.color.error}</p>
+                        </div>
+                    `;
+                }
+            }
+            
+            // 技術詳細
+            if (result.gridSize) {
+                html += `
+                    <div class="stats">
+                        <strong>技術詳細:</strong> 
+                        グリッドサイズ: ${result.gridSize}x${result.gridSize}
+                        ${result.moduleSize ? `, モジュールサイズ: ${result.moduleSize}px` : ''}
+                    </div>
+                `;
+            }
+            
+            // データ比較
+            if (result.standard && result.standard.data && result.color && result.color.data) {
+                const isMatching = result.standard.data === result.color.data;
+                html += `
+                    <div style="background: ${isMatching ? '#e8f5e8' : '#fff3e0'}; padding: 10px; border-radius: 4px; margin: 10px 0;">
+                        <strong>📋 データ比較:</strong> 
+                        ${isMatching ? '✅ 一致' : '⚠️ 不一致 - 4色QRは異なるデータエンコードの可能性'}
+                    </div>
+                `;
+            }
+            
+            resultDiv.innerHTML = html;
         }
         
         // 4色QR直接検出
@@ -942,31 +1182,26 @@
             return nearestIndex;
         }
         
-        function displayResult(result) {
-            const resultDiv = document.getElementById('result');
-            let html = '<h3>📊 解析結果</h3>';
+        // 色統計情報取得
+        function getColorStats(colorGrid) {
+            let counts = [0, 0, 0, 0];
+            let total = 0;
             
-            if (result.standard) {
-                html += `<p><strong>標準QRコード:</strong></p>
-                        <div style="background: white; padding: 15px; border-radius: 4px; margin: 10px 0; word-break: break-all;">
-                            ${result.standard}
-                        </div>`;
+            for (let row of colorGrid) {
+                for (let color of row) {
+                    if (color >= 0 && color <= 3) {
+                        counts[color]++;
+                        total++;
+                    }
+                }
             }
             
-            if (result.color) {
-                html += `<p><strong>4色QRコード:</strong></p>
-                        <div style="background: white; padding: 15px; border-radius: 4px; margin: 10px 0; word-break: break-all;">
-                            ${result.color}
-                        </div>`;
-            } else if (result.error) {
-                html += `<p><strong>4色解析エラー:</strong> ${result.error}</p>`;
-            }
-            
-            if (result.gridSize) {
-                html += `<div class="stats">グリッドサイズ: ${result.gridSize}x${result.gridSize}, モジュールサイズ: ${result.moduleSize}px</div>`;
-            }
-            
-            resultDiv.innerHTML = html;
+            const colorNames = ['黒', '白', '青', '緑'];
+            return counts.map((count, i) => ({
+                color: colorNames[i],
+                count: count,
+                percentage: total > 0 ? ((count / total) * 100).toFixed(1) : '0.0'
+            }));
         }
         
         // 標準QRコード生成
