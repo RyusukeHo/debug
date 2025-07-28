@@ -310,9 +310,67 @@
             async initializeAudio() {
                 try {
                     await Tone.start();
-                    this.synth = new Tone.PolySynth(Tone.Synth).toDestination();
+
+                    // 高品質なシンセサイザー設定
+                    // AMシンセ（Amplitude Modulation）でより豊かな音色を実現
+                    const synthOptions = {
+                        oscillator: {
+                            type: "fatsawtooth", // より豊かな倍音を持つ波形
+                            count: 3,
+                            spread: 30
+                        },
+                        envelope: {
+                            attack: 0.01,  // アタック（音の立ち上がり）を自然に
+                            decay: 0.1,    // ディケイで音に変化を
+                            sustain: 0.5,  // サスティンレベル
+                            release: 0.4   // リリース（音の減衰）を自然に
+                        },
+                        modulation: {
+                            type: "square"
+                        },
+                        modulationEnvelope: {
+                            attack: 0.5,
+                            decay: 0.0,
+                            sustain: 1.0,
+                            release: 0.5
+                        }
+                    };
+
+                    // リバーブエフェクトを追加
+                    this.reverb = new Tone.Reverb({
+                        decay: 2.0,      // リバーブの持続時間
+                        preDelay: 0.01,  // 初期反射までの時間
+                        wet: 0.2         // リバーブの混合レベル（20%）
+                    });
+
+                    // EQ（イコライザー）を追加
+                    this.eq = new Tone.EQ3({
+                        low: 0,      // 低音域
+                        mid: 2,      // 中音域を少し強調
+                        high: 1      // 高音域を少し強調
+                    });
+
+                    // コンプレッサーを追加（音量の均一化）
+                    this.compressor = new Tone.Compressor({
+                        threshold: -24,  // コンプレッションが始まる音量
+                        ratio: 8,        // 圧縮比
+                        attack: 0.003,   // アタック時間
+                        release: 0.1     // リリース時間
+                    });
+
+                    // エフェクトチェーンを構築
+                    // シンセ → EQ → コンプレッサー → リバーブ → 出力
+                    this.synth = new Tone.PolySynth(Tone.AMSynth, synthOptions)
+                        .connect(this.eq)
+                        .connect(this.compressor)
+                        .connect(this.reverb)
+                        .toDestination();
+
+                    // リバーブの初期化を待つ
+                    await this.reverb.generate();
+
                     if (this.debugMode.checked) {
-                        console.log('Audio initialized');
+                        console.log('高品質オーディオシステム初期化完了');
                     }
                     return true;
                 } catch (error) {
@@ -587,11 +645,21 @@
 
                             // 音符を必ず再生（時刻チェックを削除）
                             try {
+                                // より自然な音量制御
+                                const normalizedVelocity = Math.max(0.1, Math.min(1.0, noteToPlay.velocity || 0.8));
+                                const dynamicVolume = this.calculateDynamicVolume(normalizedVelocity);
+
+                                // より自然な音符の持続時間制御
+                                const naturalDuration = this.calculateNaturalDuration(noteToPlay.duration || 0.5, noteToPlay.pitch);
+
+                                // 音程に応じた微細な音色調整
+                                this.adjustSynthForPitch(noteToPlay.pitch);
+
                                 this.synth.triggerAttackRelease(
                                     noteToPlay.pitch,
-                                    noteToPlay.duration || 0.5,
+                                    naturalDuration,
                                     undefined,
-                                    noteToPlay.velocity || 0.8
+                                    dynamicVolume
                                 );
                                 notesPlayed++;
 
