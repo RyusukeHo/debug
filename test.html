@@ -218,9 +218,9 @@
             </div>
 
             <div class="controls">
-                <span class="label">バッファ時間:</span>
-                <input type="number" id="bufferDuration" value="3" min="1" max="10" step="1">
-                <span>秒</span>
+                <span class="label">バッファチャンク数:</span>
+                <input type="number" id="bufferChunkCount" value="5" min="1" max="20" step="1">
+                <span>個</span>
                 <label>
                     <input type="checkbox" id="autoPlay" checked>
                     自動再生
@@ -333,7 +333,7 @@
                 this.stopPlayBtn = document.getElementById('stopPlayBtn');
                 this.autoPlay = document.getElementById('autoPlay');
                 this.debugMode = document.getElementById('debugMode');
-                this.bufferDuration = document.getElementById('bufferDuration');
+                this.bufferChunkCount = document.getElementById('bufferChunkCount');
                 this.receiverStatus = document.getElementById('receiverStatus');
                 this.midiInfo = document.getElementById('midiInfo');
                 this.timingInfo = document.getElementById('timingInfo');
@@ -502,28 +502,40 @@
                     return;
                 }
 
-                const bufferTime = parseFloat(this.bufferDuration.value);
-                const currentTime = this.isBuffering ?
-                    (Date.now() - this.bufferStartTime) / 1000 : 0;
+                const bufferChunkCount = parseInt(this.bufferChunkCount.value);
+                const totalChunks = this.receivedChunks[0]?.total || 0;
 
                 let info = `=== バッファ状態 ===\n`;
-                info += `設定バッファ時間: ${bufferTime}秒\n`;
+                info += `設定バッファチャンク数: ${bufferChunkCount}個\n`;
+                info += `総チャンク数: ${totalChunks}個\n`;
+                info += `受信済みチャンク数: ${this.receivedChunks.length}個\n`;
 
                 if (this.isBuffering) {
-                    info += `現在のバッファ時間: ${currentTime.toFixed(1)}秒\n`;
-                    info += `バッファ進捗: ${Math.min(100, (currentTime / bufferTime) * 100).toFixed(1)}%\n`;
+                    const progress = Math.min(100, (this.receivedChunks.length / bufferChunkCount) * 100);
+                    info += `バッファ進捗: ${progress.toFixed(1)}% (${this.receivedChunks.length}/${bufferChunkCount})\n`;
                 } else if (this.isPlaying) {
                     info += `再生中: ${this.currentPlaybackTime.toFixed(2)}秒\n`;
                     info += `スケジュール済み音符: ${this.scheduledNotes.length}\n`;
+                    info += `再生済みチャンク: ${this.playedChunks.size}個\n`;
                 } else {
                     info += `待機中\n`;
                 }
 
-                // バッファ内のチャンク情報
-                const bufferableChunks = this.receivedChunks.filter(chunk =>
-                    chunk.startTime <= bufferTime
-                );
-                info += `バッファ対象チャンク: ${bufferableChunks.length}\n`;
+                // 連続性チェック
+                const sortedChunks = [...this.receivedChunks].sort((a, b) => a.index - b.index);
+                let consecutiveCount = 0;
+                for (let i = 0; i < sortedChunks.length; i++) {
+                    if (sortedChunks[i].index === i) {
+                        consecutiveCount++;
+                    } else {
+                        break;
+                    }
+                }
+                info += `連続受信チャンク: ${consecutiveCount}個\n`;
+
+                // バッファ準備完了の判定
+                const isBufferReady = this.receivedChunks.length >= bufferChunkCount && consecutiveCount >= bufferChunkCount;
+                info += `バッファ準備: ${isBufferReady ? '完了' : '不完了'}\n`;
 
                 this.bufferInfo.textContent = info;
             }
@@ -533,40 +545,60 @@
                     return;
                 }
 
-                const bufferTime = parseFloat(this.bufferDuration.value);
+                const bufferChunkCount = parseInt(this.bufferChunkCount.value);
 
-                // バッファ時間内に十分なデータがあるかチェック
-                const bufferableChunks = this.receivedChunks.filter(chunk =>
-                    chunk.startTime < bufferTime
-                );
+                // 連続したチャンクが十分に受信されているかチェック
+                const sortedChunks = [...this.receivedChunks].sort((a, b) => a.index - b.index);
+                let consecutiveCount = 0;
+                for (let i = 0; i < sortedChunks.length; i++) {
+                    if (sortedChunks[i].index === i) {
+                        consecutiveCount++;
+                    } else {
+                        break;
+                    }
+                }
 
-                if (bufferableChunks.length > 0) {
+                if (consecutiveCount >= bufferChunkCount) {
                     await this.startBuffering();
                 } else {
                     this.playBtn.disabled = false;
                 }
             }
 
-            // バッファリング機能
+            // バッファリング機能（チャンク数ベース）
             async startBuffering() {
                 if (this.isBuffering || this.isPlaying) return;
 
                 this.isBuffering = true;
-                this.bufferStartTime = Date.now();
-                const bufferTime = parseFloat(this.bufferDuration.value);
+                const bufferChunkCount = parseInt(this.bufferChunkCount.value);
 
-                this.updateReceiverStatus(`バッファリング中... (${bufferTime}秒)`, 'buffering');
+                this.updateReceiverStatus(`バッファリング中... (${bufferChunkCount}チャンク)`, 'buffering');
 
-                // バッファリングタイマー
-                const bufferTimer = setInterval(() => {
-                    const elapsed = (Date.now() - this.bufferStartTime) / 1000;
+                // バッファリング完了の監視
+                const checkBuffer = () => {
+                    if (!this.isBuffering) return;
+
+                    const sortedChunks = [...this.receivedChunks].sort((a, b) => a.index - b.index);
+                    let consecutiveCount = 0;
+                    for (let i = 0; i < sortedChunks.length; i++) {
+                        if (sortedChunks[i].index === i) {
+                            consecutiveCount++;
+                        } else {
+                            break;
+                        }
+                    }
+
                     this.updateBufferInfo();
 
-                    if (elapsed >= bufferTime) {
-                        clearInterval(bufferTimer);
+                    if (consecutiveCount >= bufferChunkCount) {
                         this.completeBuffering();
+                    } else {
+                        // まだ足りない場合は継続監視
+                        setTimeout(checkBuffer, 100);
                     }
-                }, 100);
+                };
+
+                checkBuffer();
             }
 
             async completeBuffering() {
@@ -603,8 +635,24 @@
             scheduleAllNotes() {
                 this.scheduledNotes = [];
 
-                // 受信済みのすべてのチャンクから音符を抽出
-                this.receivedChunks.forEach(chunk => {
+                // バッファされたチャンクのみから音符を抽出（連続性を保証）
+                const bufferChunkCount = parseInt(this.bufferChunkCount.value);
+                const sortedChunks = [...this.receivedChunks].sort((a, b) => a.index - b.index);
+
+                // 連続したチャンクのみ使用
+                const consecutiveChunks = [];
+                for (let i = 0; i < sortedChunks.length; i++) {
+                    if (sortedChunks[i].index === i) {
+                        consecutiveChunks.push(sortedChunks[i]);
+                    } else {
+                        break;
+                    }
+                }
+
+                // 最低限バッファ数まで、または利用可能な全連続チャンクを使用
+                const chunksToUse = consecutiveChunks.slice(0, Math.max(bufferChunkCount, consecutiveChunks.length));
+
+                chunksToUse.forEach(chunk => {
                     chunk.timeGroups.forEach(timeGroup => {
                         timeGroup.notes.forEach(note => {
                             this.scheduledNotes.push({
@@ -623,7 +671,7 @@
                 this.scheduledNotes.sort((a, b) => a.time - b.time);
 
                 if (this.debugMode.checked) {
-                    console.log(`${this.scheduledNotes.length} 音符をスケジュール`);
+                    console.log(`${this.scheduledNotes.length} 音符をスケジュール (${chunksToUse.length}チャンクから)`);
                 }
             }
 
@@ -674,9 +722,21 @@
             addNewlyReceivedNotes() {
                 // 新しく受信したチャンクの音符をスケジュールに追加
                 const scheduledChunks = new Set(this.scheduledNotes.map(n => n.chunkIndex));
+                const sortedChunks = [...this.receivedChunks].sort((a, b) => a.index - b.index);
 
-                this.receivedChunks.forEach(chunk => {
-                    if (!scheduledChunks.has(chunk.index)) {
+                // 連続性を保ちながら新しいチャンクを追加
+                let maxConsecutiveIndex = -1;
+                for (let i = 0; i < sortedChunks.length; i++) {
+                    if (sortedChunks[i].index === i) {
+                        maxConsecutiveIndex = i;
+                    } else {
+                        break;
+                    }
+                }
+
+                // 連続したチャンクの中で、まだスケジュールされていないものを追加
+                sortedChunks.forEach(chunk => {
+                    if (!scheduledChunks.has(chunk.index) && chunk.index <= maxConsecutiveIndex) {
                         chunk.timeGroups.forEach(timeGroup => {
                             timeGroup.notes.forEach(note => {
                                 // まだ再生時刻を過ぎていない音符のみ追加
