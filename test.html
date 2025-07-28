@@ -1,3 +1,13 @@
+this.chunkSeconds.addEventListener('input', () => {
+if (this.originalMidi) {
+this.displayMidiInfo(); // チャンク秒数変更時に予想値を更新
+}
+});
+this.flashFPS.addEventListener('input', () => {
+if (this.originalMidi) {
+this.displayMidiInfo(); // FPS変更時に予想値を更新
+}
+});
 <!DOCTYPE html>
 <html lang="ja">
 
@@ -216,9 +226,13 @@
 
             <div class="controls">
                 <span class="label">チャンク秒数:</span>
-                <input type="number" id="chunkSeconds" value="2" min="1" max="10">
+                <input type="number" id="chunkSeconds" value="2" min="0.1" max="10" step="0.1">
                 <span class="label">送信FPS:</span>
                 <input type="number" id="flashFPS" value="10" min="1" max="30">
+            </div>
+
+            <div class="controls" style="font-size: 12px; color: #666;">
+                推奨: 0.5-3秒 (0.1秒は非効率、5秒以上は遅延大)
             </div>
 
             <div class="controls">
@@ -255,10 +269,12 @@
                 // 受信側
                 this.isScanning = false;
                 this.receivedChunks = [];
+                this.playedChunks = new Set(); // 再生済みチャンクを記録
                 this.midiData = null;
                 this.isPlaying = false;
                 this.currentPlayTime = 0;
                 this.synth = null;
+                this.playbackInterval = null; // 定期的に新しいチャンクをチェック
 
                 // 送信側
                 this.originalMidi = null;
@@ -451,91 +467,70 @@
                 this.stopPlayBtn.disabled = false;
                 this.updateReceiverStatus('MIDI再生中...', 'playing');
 
-                this.currentPlayTime = 0;
-                this.playReceivedChunks();
+                // キューベース再生を開始
+                this.startQueueBasedPlayback();
             }
 
-            async playReceivedChunks() {
-                // 受信済みのチャンクから連続する部分を見つけて再生
-                const sortedChunks = this.receivedChunks.sort((a, b) => a.index - b.index);
+            startQueueBasedPlayback() {
+                // 定期的に新しいチャンクをチェックして再生
+                this.playbackInterval = setInterval(() => {
+                    if (!this.isPlaying) return;
 
-                for (let i = 0; i < sortedChunks.length && this.isPlaying; i++) {
-                    const chunk = sortedChunks[i];
+                    // 未再生のチャンクを取得
+                    const unplayedChunks = this.receivedChunks.filter(chunk =>
+                        !this.playedChunks.has(chunk.index)
+                    );
 
-                    this.updateProgress(i, sortedChunks.length);
+                    if (unplayedChunks.length === 0) return;
+
+                    // インデックス順にソート
+                    unplayedChunks.sort((a, b) => a.index - b.index);
+
+                    // 最初の未再生チャンクを再生
+                    const nextChunk = unplayedChunks[0];
+                    this.playChunk(nextChunk);
+                    this.playedChunks.add(nextChunk.index);
+
                     this.updateReceiverStatus(
-                        `チャンク ${chunk.index + 1} を再生中... (${i + 1}/${sortedChunks.length})`,
+                        `チャンク ${nextChunk.index + 1} を再生中... (${this.playedChunks.size} 個再生済み)`,
                         'playing'
                     );
 
-                    // 並行して音符を再生
-                    const notePromises = chunk.notes.map(note => {
-                        return new Promise(resolve => {
-                            setTimeout(() => {
-                                if (this.isPlaying && this.synth) {
-                                    try {
-                                        // 音量を設定（velocityを反映）
-                                        const velocity = note.velocity || 0.8;
-                                        this.synth.triggerAttackRelease(
-                                            note.pitch,
-                                            note.duration,
-                                            undefined, // 現在時刻から
-                                            velocity
-                                        );
-                                    } catch (error) {
-                                        console.error('音符再生エラー:', error, note);
-                                    }
-                                }
-                                resolve();
-                            }, note.time * 1000);
-                        });
-                    });
+                    this.updateProgress(this.playedChunks.size, this.receivedChunks[0]?.total || this.receivedChunks.length);
 
-                    // このチャンクの全音符の再生開始を待つ
-                    await Promise.all(notePromises);
+                }, 100); // 100ms間隔でチェック
+            }
 
-                    // チャンクの再生時間分待機
-                    await new Promise(resolve => setTimeout(resolve, chunk.duration * 1000));
-
-                    // 次のチャンクが受信済みでない場合は待機
-                    if (i + 1 < sortedChunks.length) {
-                        const nextChunkIndex = sortedChunks[i].index + 1;
-                        const nextChunk = sortedChunks.find(c => c.index === nextChunkIndex);
-
-                        if (!nextChunk) {
-                            // 次のチャンクを待機
-                            this.updateReceiverStatus(
-                                `次のチャンク (${nextChunkIndex + 1}) を待機中...`,
-                                'info'
-                            );
-
-                            // 次のチャンクが来るまで待機（最大10秒）
-                            let waitTime = 0;
-                            while (waitTime < 10000 && this.isPlaying) {
-                                await new Promise(resolve => setTimeout(resolve, 100));
-                                waitTime += 100;
-
-                                // 新しいチャンクが受信されたかチェック
-                                const updatedChunk = this.receivedChunks.find(c => c.index === nextChunkIndex);
-                                if (updatedChunk) {
-                                    sortedChunks.splice(i + 1, 0, updatedChunk);
-                                    break;
-                                }
+            async playChunk(chunk) {
+                // チャンク内の全音符を並行再生
+                chunk.notes.forEach(note => {
+                    setTimeout(() => {
+                        if (this.isPlaying && this.synth) {
+                            try {
+                                const velocity = note.velocity || 0.8;
+                                this.synth.triggerAttackRelease(
+                                    note.pitch,
+                                    note.duration,
+                                    undefined,
+                                    velocity
+                                );
+                            } catch (error) {
+                                console.error('音符再生エラー:', error, note);
                             }
                         }
-                    }
-                }
-
-                if (this.isPlaying) {
-                    this.stopMidi();
-                    this.updateReceiverStatus('再生完了', 'success');
-                }
+                    }, note.time * 1000);
+                });
             }
 
             stopMidi() {
                 this.isPlaying = false;
                 this.playBtn.disabled = false;
                 this.stopPlayBtn.disabled = true;
+
+                if (this.playbackInterval) {
+                    clearInterval(this.playbackInterval);
+                    this.playbackInterval = null;
+                }
 
                 if (this.synth) {
                     this.synth.releaseAll();
@@ -551,6 +546,7 @@
 
             clearData() {
                 this.receivedChunks = [];
+                this.playedChunks.clear(); // 再生済みチャンク記録もクリア
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
                 this.updateReceiverStatus('データをクリアしました', 'info');
@@ -584,11 +580,17 @@
             displayMidiInfo() {
                 if (!this.originalMidi) return;
 
+                const chunkDuration = parseFloat(this.chunkSeconds.value);
+                const estimatedChunks = Math.ceil(this.originalMidi.duration / chunkDuration);
+                const totalNotes = this.originalMidi.tracks.reduce((sum, track) => sum + track.notes.length, 0);
+
                 const info = `
 ファイル名: ${this.midiFile.files[0].name}
 トラック数: ${this.originalMidi.tracks.length}
 演奏時間: ${this.originalMidi.duration.toFixed(2)} 秒
-音符数: ${this.originalMidi.tracks.reduce((sum, track) => sum + track.notes.length, 0)}
+音符数: ${totalNotes}
+予想チャンク数: ${estimatedChunks} 個
+転送予想時間: ${(estimatedChunks / parseInt(this.flashFPS.value)).toFixed(1)} 秒
                 `.trim();
 
                 this.senderMidiInfo.textContent = info;
