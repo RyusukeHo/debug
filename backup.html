@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>フラッシュQRコード読み取り・生成アプリ</title>
+    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script src="https://unpkg.com/qrious@4.0.2/dist/qrious.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            margin-top: 0;
+            color: #333;
+        }
+
+        video,
+        canvas {
+            width: 100%;
+            max-width: 400px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+        }
+
+        .controls {
+            margin: 15px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        input,
+        textarea,
+        select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 100px;
+            resize: vertical;
+            font-family: monospace;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .status.complete {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #28a745;
+        }
+
+        .fps-display {
+            font-family: monospace;
+            background: #333;
+            color: #0f0;
+            padding: 5px 10px;
+            border-radius: 3px;
+            display: inline-block;
+        }
+
+        .data-display {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+
+        .flash-display {
+            text-align: center;
+            padding: 20px;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .qr-canvas {
+            border: 2px solid #333;
+            max-width: 100%;
+        }
+
+        .label {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        label {
+            margin-right: 15px;
+            cursor: pointer;
+        }
+
+        label input[type="radio"] {
+            margin-right: 5px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <!-- 読み取り側 -->
+        <div class="panel">
+            <h2>📱 QRコード読み取り</h2>
+
+            <video id="video" autoplay></video>
+            <canvas id="canvas" style="display: none;"></canvas>
+
+            <div class="controls">
+                <button id="startBtn">カメラ開始</button>
+                <button id="stopBtn" disabled>停止</button>
+                <button id="clearDataBtn">データクリア</button>
+            </div>
+
+            <div class="controls">
+                <span class="label">開始フラグ:</span>
+                <input type="text" id="startFlag" value="START:" placeholder="例: START:">
+                <span class="label">終了フラグ:</span>
+                <input type="text" id="endFlag" value="END:" placeholder="例: END:">
+            </div>
+
+            <div class="controls">
+                <span class="label">FPS:</span>
+                <span class="fps-display" id="fpsDisplay">0 FPS</span>
+            </div>
+
+            <div class="controls">
+                <span class="label">シーケンス番号欠落時:</span>
+                <label>
+                    <input type="radio" name="sequenceMode" id="waitMode" checked>
+                    次の周期を待つ
+                </label>
+                <label>
+                    <input type="radio" name="sequenceMode" id="continueMode">
+                    そのまま続行
+                </label>
+            </div>
+
+            <div id="readerStatus" class="status info">カメラを開始してください</div>
+
+            <div class="data-display" id="receivedData">受信データがここに表示されます...</div>
+        </div>
+
+        <!-- 生成・送信側 -->
+        <div class="panel">
+            <h2>📤 QRコード生成・フラッシュ送信</h2>
+
+            <textarea id="dataInput"
+                placeholder="送信したいデータを入力してください...&#10;例:&#10;Hello World!&#10;複数行のデータも送信できます。"></textarea>
+
+            <div class="controls">
+                <span class="label">チャンクサイズ:</span>
+                <input type="number" id="chunkSize" value="50" min="10" max="200">
+                <span class="label">送信FPS:</span>
+                <input type="number" id="flashFPS" value="5" min="1" max="30">
+            </div>
+
+            <div class="controls">
+                <span class="label">開始フラグ:</span>
+                <input type="text" id="senderStartFlag" value="START:" placeholder="例: START:">
+                <span class="label">終了フラグ:</span>
+                <input type="text" id="senderEndFlag" value="END:" placeholder="例: END:">
+            </div>
+
+            <div class="controls">
+                <button id="generateBtn">QRコード生成</button>
+                <button id="flashBtn" disabled>フラッシュ開始</button>
+                <button id="stopFlashBtn" disabled>フラッシュ停止</button>
+            </div>
+
+            <div id="senderStatus" class="status info">データを入力してQRコードを生成してください</div>
+
+            <div class="flash-display">
+                <canvas id="qrCanvas" class="qr-canvas"></canvas>
+            </div>
+
+            <div class="controls">
+                <span class="label">進行状況:</span>
+                <span id="progressDisplay">0 / 0</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class FlashQRApp {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.qrCanvas = document.getElementById('qrCanvas');
+                this.qrCtx = this.qrCanvas.getContext('2d');
+
+                this.isScanning = false;
+                this.receivedData = '';
+                this.isReceiving = false;
+                this.isCompleted = false;
+                this.lastFPSTime = 0;
+                this.frameCount = 0;
+                this.lastProcessedSequence = -1;
+                this.expectedSequence = 0;
+                this.waitingForNextCycle = false;
+
+                this.qrChunks = [];
+                this.flashInterval = null;
+                this.currentChunkIndex = 0;
+                this.flashCompleted = false;
+
+                this.initializeElements();
+                this.setupEventListeners();
+            }
+
+            initializeElements() {
+                this.startBtn = document.getElementById('startBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.clearDataBtn = document.getElementById('clearDataBtn');
+                this.startFlag = document.getElementById('startFlag');
+                this.endFlag = document.getElementById('endFlag');
+                this.fpsDisplay = document.getElementById('fpsDisplay');
+                this.readerStatus = document.getElementById('readerStatus');
+                this.receivedDataDisplay = document.getElementById('receivedData');
+                this.waitMode = document.getElementById('waitMode');
+                this.continueMode = document.getElementById('continueMode');
+
+                this.dataInput = document.getElementById('dataInput');
+                this.chunkSize = document.getElementById('chunkSize');
+                this.flashFPS = document.getElementById('flashFPS');
+                this.senderStartFlag = document.getElementById('senderStartFlag');
+                this.senderEndFlag = document.getElementById('senderEndFlag');
+                this.generateBtn = document.getElementById('generateBtn');
+                this.flashBtn = document.getElementById('flashBtn');
+                this.stopFlashBtn = document.getElementById('stopFlashBtn');
+                this.senderStatus = document.getElementById('senderStatus');
+                this.progressDisplay = document.getElementById('progressDisplay');
+            }
+
+            setupEventListeners() {
+                this.startBtn.addEventListener('click', () => this.startCamera());
+                this.stopBtn.addEventListener('click', () => this.stopCamera());
+                this.clearDataBtn.addEventListener('click', () => this.clearData());
+
+                this.generateBtn.addEventListener('click', () => this.generateQRCodes());
+                this.flashBtn.addEventListener('click', () => this.startFlashing());
+                this.stopFlashBtn.addEventListener('click', () => this.stopFlashing());
+            }
+
+            async startCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment' }
+                    });
+                    this.video.srcObject = stream;
+                    this.video.addEventListener('loadedmetadata', () => {
+                        this.canvas.width = this.video.videoWidth;
+                        this.canvas.height = this.video.videoHeight;
+                        this.startScanning();
+                    });
+
+                    this.startBtn.disabled = true;
+                    this.stopBtn.disabled = false;
+                    this.updateReaderStatus('カメラが開始されました', 'success');
+                } catch (error) {
+                    this.updateReaderStatus('カメラアクセスエラー: ' + error.message, 'error');
+                }
+            }
+
+            stopCamera() {
+                this.isScanning = false;
+                if (this.video.srcObject) {
+                    this.video.srcObject.getTracks().forEach(track => track.stop());
+                    this.video.srcObject = null;
+                }
+                this.startBtn.disabled = false;
+                this.stopBtn.disabled = true;
+                this.updateReaderStatus('カメラが停止されました', 'info');
+            }
+
+            startScanning() {
+                this.isScanning = true;
+                this.lastFPSTime = performance.now();
+                this.frameCount = 0;
+                this.scanFrame();
+            }
+
+            scanFrame() {
+                if (!this.isScanning) return;
+
+                this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+                if (code) {
+                    this.processQRCode(code.data);
+                }
+
+                this.updateFPS();
+                requestAnimationFrame(() => this.scanFrame());
+            }
+
+            processQRCode(data) {
+                const startFlag = this.startFlag.value;
+                const endFlag = this.endFlag.value;
+
+                // ENDフラグの検出
+                if (data.startsWith(endFlag)) {
+                    if (this.isReceiving) {
+                        this.isReceiving = false;
+                        this.isCompleted = true;
+                        this.updateReaderStatus('データ受信が完了しました！', 'complete');
+                        return;
+                    }
+                }
+
+                // 既に受信完了している場合は新しい開始も無視
+                if (this.isCompleted) {
+                    return;
+                }
+
+                // シーケンス番号を抽出
+                let sequenceMatch;
+                let actualData;
+                let isStartFlag = false;
+
+                if (data.startsWith(startFlag)) {
+                    // 開始フラグありの場合
+                    isStartFlag = true;
+                    const afterStartFlag = data.substring(startFlag.length);
+                    sequenceMatch = afterStartFlag.match(/^SEQ:(\d+):(.*)/);
+                    if (sequenceMatch) {
+                        actualData = sequenceMatch[2];
+                    } else {
+                        // 古い形式の互換性のため
+                        actualData = afterStartFlag;
+                        sequenceMatch = [null, "0", afterStartFlag];
+                    }
+                } else {
+                    // 通常のQRコード
+                    sequenceMatch = data.match(/^SEQ:(\d+):(.*)/);
+                    if (sequenceMatch) {
+                        actualData = sequenceMatch[2];
+                    } else {
+                        // シーケンス番号がない場合はスキップ
+                        return;
+                    }
+                }
+
+                const sequenceNumber = parseInt(sequenceMatch[1]);
+
+                // 同じシーケンス番号は無視
+                if (sequenceNumber === this.lastProcessedSequence) {
+                    return;
+                }
+
+                if (isStartFlag) {
+                    // 開始フラグが見つかった場合
+                    if (this.waitingForNextCycle) {
+                        // 次の周期を待っていた場合、新しい周期として受信開始
+                        this.isReceiving = true;
+                        this.waitingForNextCycle = false;
+                        this.receivedData = '';
+                        this.lastProcessedSequence = sequenceNumber;
+                        this.expectedSequence = sequenceNumber + 1;
+                        this.updateReaderStatus(`新しい周期でデータ受信を再開しました（SEQ:${sequenceNumber}）`, 'success');
+                        this.receivedData += actualData;
+                        this.updateReceivedData();
+                    } else if (!this.isReceiving) {
+                        // 初回受信開始
+                        this.isReceiving = true;
+                        this.isCompleted = false;
+                        this.receivedData = '';
+                        this.lastProcessedSequence = sequenceNumber;
+                        this.expectedSequence = sequenceNumber + 1;
+                        this.updateReaderStatus(`新しいデータ受信を開始しました（SEQ:${sequenceNumber}）`, 'success');
+                        this.receivedData += actualData;
+                        this.updateReceivedData();
+                    }
+                    // 既に受信中の場合は、「そのまま続行」モードなら無視、「次の周期を待つ」モードなら上記の処理
+                } else if (this.waitingForNextCycle) {
+                    // 次の周期を待っている場合は開始フラグ以外は無視
+                    return;
+                } else if (this.isReceiving) {
+                    // 受信中の場合、シーケンス番号をチェック
+                    if (sequenceNumber === this.expectedSequence) {
+                        // 期待通りのシーケンス番号
+                        this.lastProcessedSequence = sequenceNumber;
+                        this.expectedSequence = sequenceNumber + 1;
+                        this.receivedData += actualData;
+                        this.updateReceivedData();
+                    } else if (sequenceNumber > this.expectedSequence) {
+                        // シーケンス番号が飛んだ場合
+                        const isWaitMode = this.waitMode.checked;
+
+                        if (isWaitMode) {
+                            // 次の周期を待つモード - 受信を中断して次の周期を待つ
+                            this.waitingForNextCycle = true;
+                            this.isReceiving = false;
+                            this.updateReaderStatus(
+                                `シーケンス番号が飛びました（期待:${this.expectedSequence}, 受信:${sequenceNumber}）次の周期を待機中...`,
+                                'error'
+                            );
+                        } else {
+                            // そのまま続行モード - 欠落があってもそのまま進める
+                            this.lastProcessedSequence = sequenceNumber;
+                            this.expectedSequence = sequenceNumber + 1;
+                            this.receivedData += actualData;
+                            this.updateReceivedData();
+                            this.updateReaderStatus(
+                                `シーケンス番号が飛びましたが続行しました（期待:${this.expectedSequence - 1}, 受信:${sequenceNumber}）`,
+                                'info'
+                            );
+                        }
+                    }
+                    // sequenceNumber < expectedSequence の場合は古いデータなので無視
+                }
+            }
+
+            updateFPS() {
+                this.frameCount++;
+                const now = performance.now();
+                if (now - this.lastFPSTime >= 1000) {
+                    const fps = Math.round(this.frameCount * 1000 / (now - this.lastFPSTime));
+                    this.fpsDisplay.textContent = `${fps} FPS`;
+                    this.frameCount = 0;
+                    this.lastFPSTime = now;
+                }
+            }
+
+            clearData() {
+                this.receivedData = '';
+                this.isReceiving = false;
+                this.isCompleted = false;
+                this.lastProcessedSequence = -1;
+                this.expectedSequence = 0;
+                this.waitingForNextCycle = false;
+                this.updateReceivedData();
+                this.updateReaderStatus('データをクリアしました', 'info');
+            }
+
+            updateReaderStatus(message, type) {
+                this.readerStatus.textContent = message;
+                this.readerStatus.className = `status ${type}`;
+            }
+
+            updateReceivedData() {
+                this.receivedDataDisplay.textContent = this.receivedData || '受信データがここに表示されます...';
+            }
+
+            generateQRCodes() {
+                const data = this.dataInput.value;
+                if (!data.trim()) {
+                    this.updateSenderStatus('送信するデータを入力してください', 'error');
+                    return;
+                }
+
+                const chunkSize = parseInt(this.chunkSize.value);
+                const startFlag = this.senderStartFlag.value;
+                const endFlag = this.senderEndFlag.value;
+
+                this.qrChunks = [];
+                let sequenceNumber = 0;
+
+                // シーケンス番号のフォーマット用関数
+                const formatSequence = (num) => num.toString().padStart(3, '0');
+
+                // 最初のチャンクに開始フラグとシーケンス番号を付加
+                const seqPrefix = `SEQ:${formatSequence(sequenceNumber)}:`;
+                const availableSize = chunkSize - startFlag.length - seqPrefix.length;
+
+                if (availableSize <= 0) {
+                    this.updateSenderStatus('チャンクサイズが小さすぎます', 'error');
+                    return;
+                }
+
+                const firstChunk = startFlag + seqPrefix + data.substring(0, availableSize);
+                this.qrChunks.push(firstChunk);
+                sequenceNumber++;
+
+                // 残りのデータをチャンクに分割
+                let remainingData = data.substring(availableSize);
+                while (remainingData.length > 0) {
+                    const seqPrefix = `SEQ:${formatSequence(sequenceNumber)}:`;
+                    const availableSize = chunkSize - seqPrefix.length;
+                    const chunk = seqPrefix + remainingData.substring(0, availableSize);
+                    this.qrChunks.push(chunk);
+                    remainingData = remainingData.substring(availableSize);
+                    sequenceNumber++;
+                }
+
+                // 最後にENDフラグを追加
+                this.qrChunks.push(endFlag);
+
+                this.currentChunkIndex = 0;
+                this.flashCompleted = false;
+                this.flashBtn.disabled = false;
+                this.updateSenderStatus(`${this.qrChunks.length - 1} 個のデータQRコード + ENDフラグを生成しました`, 'success');
+                this.updateProgress();
+
+                // 最初のQRコードを表示
+                this.displayQRCode(this.qrChunks[0]);
+            }
+
+            displayQRCode(data) {
+                try {
+                    const qr = new QRious({
+                        element: this.qrCanvas,
+                        value: data,
+                        size: 300,
+                        background: 'white',
+                        foreground: 'black',
+                        level: 'M'
+                    });
+                } catch (error) {
+                    this.updateSenderStatus('QRコード生成エラー: ' + error.message, 'error');
+                }
+            }
+
+            startFlashing() {
+                if (this.qrChunks.length === 0) {
+                    this.updateSenderStatus('まずQRコードを生成してください', 'error');
+                    return;
+                }
+
+                this.currentChunkIndex = 0;
+                this.flashCompleted = false;
+                const fps = parseInt(this.flashFPS.value);
+                const interval = 1000 / fps;
+
+                this.flashInterval = setInterval(() => {
+                    this.displayQRCode(this.qrChunks[this.currentChunkIndex]);
+                    this.updateProgress();
+
+                    this.currentChunkIndex++;
+
+                    // 全てのQRコードを送信したらループして最初から
+                    if (this.currentChunkIndex >= this.qrChunks.length) {
+                        this.currentChunkIndex = 0; // 最初から再開
+                    }
+                }, interval);
+
+                this.flashBtn.disabled = true;
+                this.stopFlashBtn.disabled = false;
+                this.updateSenderStatus(`${fps} FPS でフラッシュ送信中（ループ）...`, 'success');
+            }
+
+            stopFlashing() {
+                if (this.flashInterval) {
+                    clearInterval(this.flashInterval);
+                    this.flashInterval = null;
+                }
+                this.flashBtn.disabled = false;
+                this.stopFlashBtn.disabled = true;
+                this.updateSenderStatus('フラッシュ送信を停止しました', 'info');
+            }
+
+            updateSenderStatus(message, type) {
+                this.senderStatus.textContent = message;
+                this.senderStatus.className = `status ${type}`;
+            }
+
+            updateProgress() {
+                const current = Math.min(this.currentChunkIndex + 1, this.qrChunks.length);
+                this.progressDisplay.textContent = `${current} / ${this.qrChunks.length}`;
+            }
+        }
+
+        // アプリケーション初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            new FlashQRApp();
+        });
+    </script>
+</body>
+
+</html>

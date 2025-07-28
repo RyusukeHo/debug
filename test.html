@@ -4,9 +4,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>フラッシュQRコード読み取り・生成アプリ</title>
+    <title>MIDI QRストリーミング</title>
     <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
     <script src="https://unpkg.com/qrious@4.0.2/dist/qrious.min.js"></script>
+    <script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+    <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -70,20 +72,19 @@
             cursor: not-allowed;
         }
 
-        input,
-        textarea,
-        select {
+        input[type="file"] {
             padding: 8px;
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 14px;
         }
 
-        textarea {
-            width: 100%;
-            min-height: 100px;
-            resize: vertical;
-            font-family: monospace;
+        input[type="number"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 80px;
         }
 
         .status {
@@ -111,31 +112,10 @@
             border: 1px solid #bee5eb;
         }
 
-        .status.complete {
-            background: #d4edda;
-            color: #155724;
-            border: 2px solid #28a745;
-        }
-
-        .fps-display {
-            font-family: monospace;
-            background: #333;
-            color: #0f0;
-            padding: 5px 10px;
-            border-radius: 3px;
-            display: inline-block;
-        }
-
-        .data-display {
-            background: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 5px;
-            padding: 15px;
-            margin: 10px 0;
-            max-height: 200px;
-            overflow-y: auto;
-            font-family: monospace;
-            white-space: pre-wrap;
+        .status.playing {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
         }
 
         .flash-display {
@@ -157,13 +137,29 @@
             margin-right: 10px;
         }
 
-        label {
-            margin-right: 15px;
-            cursor: pointer;
+        .midi-info {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: monospace;
         }
 
-        label input[type="radio"] {
-            margin-right: 5px;
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: #28a745;
+            width: 0%;
+            transition: width 0.3s;
         }
 
         @media (max-width: 768px) {
@@ -176,9 +172,9 @@
 
 <body>
     <div class="container">
-        <!-- 読み取り側 -->
+        <!-- 受信・再生側 -->
         <div class="panel">
-            <h2>📱 QRコード読み取り</h2>
+            <h2>🎵 MIDI受信・再生</h2>
 
             <video id="video" autoplay></video>
             <canvas id="canvas" style="display: none;"></canvas>
@@ -186,66 +182,52 @@
             <div class="controls">
                 <button id="startBtn">カメラ開始</button>
                 <button id="stopBtn" disabled>停止</button>
-                <button id="clearDataBtn">データクリア</button>
+                <button id="clearBtn">クリア</button>
+                <button id="playBtn" disabled>再生</button>
+                <button id="stopPlayBtn" disabled>停止</button>
             </div>
 
             <div class="controls">
-                <span class="label">開始フラグ:</span>
-                <input type="text" id="startFlag" value="START:" placeholder="例: START:">
-                <span class="label">終了フラグ:</span>
-                <input type="text" id="endFlag" value="END:" placeholder="例: END:">
-            </div>
-
-            <div class="controls">
-                <span class="label">FPS:</span>
-                <span class="fps-display" id="fpsDisplay">0 FPS</span>
-            </div>
-
-            <div class="controls">
-                <span class="label">シーケンス番号欠落時:</span>
                 <label>
-                    <input type="radio" name="sequenceMode" id="waitMode" checked>
-                    次の周期を待つ
-                </label>
-                <label>
-                    <input type="radio" name="sequenceMode" id="continueMode">
-                    そのまま続行
+                    <input type="checkbox" id="autoPlay" checked>
+                    自動再生（チャンク受信時）
                 </label>
             </div>
 
-            <div id="readerStatus" class="status info">カメラを開始してください</div>
+            <div id="receiverStatus" class="status info">カメラを開始してください</div>
 
-            <div class="data-display" id="receivedData">受信データがここに表示されます...</div>
+            <div class="progress-bar">
+                <div id="playProgress" class="progress-fill"></div>
+            </div>
+
+            <div class="midi-info" id="midiInfo">
+                MIDIデータの受信を待っています...
+            </div>
         </div>
 
-        <!-- 生成・送信側 -->
+        <!-- 送信側 -->
         <div class="panel">
-            <h2>📤 QRコード生成・フラッシュ送信</h2>
-
-            <textarea id="dataInput"
-                placeholder="送信したいデータを入力してください...&#10;例:&#10;Hello World!&#10;複数行のデータも送信できます。"></textarea>
+            <h2>📤 MIDI送信</h2>
 
             <div class="controls">
-                <span class="label">チャンクサイズ:</span>
-                <input type="number" id="chunkSize" value="50" min="10" max="200">
+                <input type="file" id="midiFile" accept=".mid,.midi" />
+                <button id="loadMidiBtn">MIDI読み込み</button>
+            </div>
+
+            <div class="controls">
+                <span class="label">チャンク秒数:</span>
+                <input type="number" id="chunkSeconds" value="2" min="1" max="10">
                 <span class="label">送信FPS:</span>
-                <input type="number" id="flashFPS" value="5" min="1" max="30">
+                <input type="number" id="flashFPS" value="10" min="1" max="30">
             </div>
 
             <div class="controls">
-                <span class="label">開始フラグ:</span>
-                <input type="text" id="senderStartFlag" value="START:" placeholder="例: START:">
-                <span class="label">終了フラグ:</span>
-                <input type="text" id="senderEndFlag" value="END:" placeholder="例: END:">
-            </div>
-
-            <div class="controls">
-                <button id="generateBtn">QRコード生成</button>
+                <button id="generateBtn" disabled>QRコード生成</button>
                 <button id="flashBtn" disabled>フラッシュ開始</button>
                 <button id="stopFlashBtn" disabled>フラッシュ停止</button>
             </div>
 
-            <div id="senderStatus" class="status info">データを入力してQRコードを生成してください</div>
+            <div id="senderStatus" class="status info">MIDIファイルを選択してください</div>
 
             <div class="flash-display">
                 <canvas id="qrCanvas" class="qr-canvas"></canvas>
@@ -255,69 +237,83 @@
                 <span class="label">進行状況:</span>
                 <span id="progressDisplay">0 / 0</span>
             </div>
+
+            <div class="midi-info" id="senderMidiInfo">
+                MIDIファイル情報がここに表示されます...
+            </div>
         </div>
     </div>
 
     <script>
-        class FlashQRApp {
+        class MIDIQRStreaming {
             constructor() {
                 this.video = document.getElementById('video');
                 this.canvas = document.getElementById('canvas');
                 this.ctx = this.canvas.getContext('2d');
                 this.qrCanvas = document.getElementById('qrCanvas');
-                this.qrCtx = this.qrCanvas.getContext('2d');
 
+                // 受信側
                 this.isScanning = false;
-                this.receivedData = '';
-                this.isReceiving = false;
-                this.isCompleted = false;
-                this.lastFPSTime = 0;
-                this.frameCount = 0;
-                this.lastProcessedSequence = -1;
-                this.expectedSequence = 0;
-                this.waitingForNextCycle = false;
+                this.receivedChunks = [];
+                this.midiData = null;
+                this.isPlaying = false;
+                this.currentPlayTime = 0;
+                this.synth = null;
 
+                // 送信側
+                this.originalMidi = null;
                 this.qrChunks = [];
                 this.flashInterval = null;
                 this.currentChunkIndex = 0;
-                this.flashCompleted = false;
 
                 this.initializeElements();
                 this.setupEventListeners();
+                this.initializeAudio();
             }
 
             initializeElements() {
+                // 受信側
                 this.startBtn = document.getElementById('startBtn');
                 this.stopBtn = document.getElementById('stopBtn');
-                this.clearDataBtn = document.getElementById('clearDataBtn');
-                this.startFlag = document.getElementById('startFlag');
-                this.endFlag = document.getElementById('endFlag');
-                this.fpsDisplay = document.getElementById('fpsDisplay');
-                this.readerStatus = document.getElementById('readerStatus');
-                this.receivedDataDisplay = document.getElementById('receivedData');
-                this.waitMode = document.getElementById('waitMode');
-                this.continueMode = document.getElementById('continueMode');
+                this.clearBtn = document.getElementById('clearBtn');
+                this.playBtn = document.getElementById('playBtn');
+                this.stopPlayBtn = document.getElementById('stopPlayBtn');
+                this.autoPlay = document.getElementById('autoPlay');
+                this.receiverStatus = document.getElementById('receiverStatus');
+                this.midiInfo = document.getElementById('midiInfo');
+                this.playProgress = document.getElementById('playProgress');
 
-                this.dataInput = document.getElementById('dataInput');
-                this.chunkSize = document.getElementById('chunkSize');
+                // 送信側
+                this.midiFile = document.getElementById('midiFile');
+                this.loadMidiBtn = document.getElementById('loadMidiBtn');
+                this.chunkSeconds = document.getElementById('chunkSeconds');
                 this.flashFPS = document.getElementById('flashFPS');
-                this.senderStartFlag = document.getElementById('senderStartFlag');
-                this.senderEndFlag = document.getElementById('senderEndFlag');
                 this.generateBtn = document.getElementById('generateBtn');
                 this.flashBtn = document.getElementById('flashBtn');
                 this.stopFlashBtn = document.getElementById('stopFlashBtn');
                 this.senderStatus = document.getElementById('senderStatus');
                 this.progressDisplay = document.getElementById('progressDisplay');
+                this.senderMidiInfo = document.getElementById('senderMidiInfo');
             }
 
             setupEventListeners() {
+                // 受信側
                 this.startBtn.addEventListener('click', () => this.startCamera());
                 this.stopBtn.addEventListener('click', () => this.stopCamera());
-                this.clearDataBtn.addEventListener('click', () => this.clearData());
+                this.clearBtn.addEventListener('click', () => this.clearData());
+                this.playBtn.addEventListener('click', () => this.playMidi());
+                this.stopPlayBtn.addEventListener('click', () => this.stopMidi());
 
+                // 送信側
+                this.loadMidiBtn.addEventListener('click', () => this.loadMidiFile());
                 this.generateBtn.addEventListener('click', () => this.generateQRCodes());
                 this.flashBtn.addEventListener('click', () => this.startFlashing());
                 this.stopFlashBtn.addEventListener('click', () => this.stopFlashing());
+            }
+
+            async initializeAudio() {
+                await Tone.start();
+                this.synth = new Tone.PolySynth().toDestination();
             }
 
             async startCamera() {
@@ -334,9 +330,9 @@
 
                     this.startBtn.disabled = true;
                     this.stopBtn.disabled = false;
-                    this.updateReaderStatus('カメラが開始されました', 'success');
+                    this.updateReceiverStatus('カメラが開始されました', 'success');
                 } catch (error) {
-                    this.updateReaderStatus('カメラアクセスエラー: ' + error.message, 'error');
+                    this.updateReceiverStatus('カメラアクセスエラー: ' + error.message, 'error');
                 }
             }
 
@@ -348,13 +344,11 @@
                 }
                 this.startBtn.disabled = false;
                 this.stopBtn.disabled = true;
-                this.updateReaderStatus('カメラが停止されました', 'info');
+                this.updateReceiverStatus('カメラが停止されました', 'info');
             }
 
             startScanning() {
                 this.isScanning = true;
-                this.lastFPSTime = performance.now();
-                this.frameCount = 0;
                 this.scanFrame();
             }
 
@@ -369,210 +363,261 @@
                     this.processQRCode(code.data);
                 }
 
-                this.updateFPS();
                 requestAnimationFrame(() => this.scanFrame());
             }
 
             processQRCode(data) {
-                const startFlag = this.startFlag.value;
-                const endFlag = this.endFlag.value;
+                try {
+                    if (data.startsWith('MIDI:')) {
+                        const jsonData = data.substring(5);
+                        const chunkData = JSON.parse(jsonData);
 
-                // ENDフラグの検出
-                if (data.startsWith(endFlag)) {
-                    if (this.isReceiving) {
-                        this.isReceiving = false;
-                        this.isCompleted = true;
-                        this.updateReaderStatus('データ受信が完了しました！', 'complete');
-                        return;
-                    }
-                }
-
-                // 既に受信完了している場合は新しい開始も無視
-                if (this.isCompleted) {
-                    return;
-                }
-
-                // シーケンス番号を抽出
-                let sequenceMatch;
-                let actualData;
-                let isStartFlag = false;
-
-                if (data.startsWith(startFlag)) {
-                    // 開始フラグありの場合
-                    isStartFlag = true;
-                    const afterStartFlag = data.substring(startFlag.length);
-                    sequenceMatch = afterStartFlag.match(/^SEQ:(\d+):(.*)/);
-                    if (sequenceMatch) {
-                        actualData = sequenceMatch[2];
-                    } else {
-                        // 古い形式の互換性のため
-                        actualData = afterStartFlag;
-                        sequenceMatch = [null, "0", afterStartFlag];
-                    }
-                } else {
-                    // 通常のQRコード
-                    sequenceMatch = data.match(/^SEQ:(\d+):(.*)/);
-                    if (sequenceMatch) {
-                        actualData = sequenceMatch[2];
-                    } else {
-                        // シーケンス番号がない場合はスキップ
-                        return;
-                    }
-                }
-
-                const sequenceNumber = parseInt(sequenceMatch[1]);
-
-                // 同じシーケンス番号は無視
-                if (sequenceNumber === this.lastProcessedSequence) {
-                    return;
-                }
-
-                if (isStartFlag) {
-                    // 開始フラグが見つかった場合
-                    if (this.waitingForNextCycle) {
-                        // 次の周期を待っていた場合、新しい周期として受信開始
-                        this.isReceiving = true;
-                        this.waitingForNextCycle = false;
-                        this.receivedData = '';
-                        this.lastProcessedSequence = sequenceNumber;
-                        this.expectedSequence = sequenceNumber + 1;
-                        this.updateReaderStatus(`新しい周期でデータ受信を再開しました（SEQ:${sequenceNumber}）`, 'success');
-                        this.receivedData += actualData;
-                        this.updateReceivedData();
-                    } else if (!this.isReceiving) {
-                        // 初回受信開始
-                        this.isReceiving = true;
-                        this.isCompleted = false;
-                        this.receivedData = '';
-                        this.lastProcessedSequence = sequenceNumber;
-                        this.expectedSequence = sequenceNumber + 1;
-                        this.updateReaderStatus(`新しいデータ受信を開始しました（SEQ:${sequenceNumber}）`, 'success');
-                        this.receivedData += actualData;
-                        this.updateReceivedData();
-                    }
-                    // 既に受信中の場合は、「そのまま続行」モードなら無視、「次の周期を待つ」モードなら上記の処理
-                } else if (this.waitingForNextCycle) {
-                    // 次の周期を待っている場合は開始フラグ以外は無視
-                    return;
-                } else if (this.isReceiving) {
-                    // 受信中の場合、シーケンス番号をチェック
-                    if (sequenceNumber === this.expectedSequence) {
-                        // 期待通りのシーケンス番号
-                        this.lastProcessedSequence = sequenceNumber;
-                        this.expectedSequence = sequenceNumber + 1;
-                        this.receivedData += actualData;
-                        this.updateReceivedData();
-                    } else if (sequenceNumber > this.expectedSequence) {
-                        // シーケンス番号が飛んだ場合
-                        const isWaitMode = this.waitMode.checked;
-
-                        if (isWaitMode) {
-                            // 次の周期を待つモード - 受信を中断して次の周期を待つ
-                            this.waitingForNextCycle = true;
-                            this.isReceiving = false;
-                            this.updateReaderStatus(
-                                `シーケンス番号が飛びました（期待:${this.expectedSequence}, 受信:${sequenceNumber}）次の周期を待機中...`,
-                                'error'
-                            );
-                        } else {
-                            // そのまま続行モード - 欠落があってもそのまま進める
-                            this.lastProcessedSequence = sequenceNumber;
-                            this.expectedSequence = sequenceNumber + 1;
-                            this.receivedData += actualData;
-                            this.updateReceivedData();
-                            this.updateReaderStatus(
-                                `シーケンス番号が飛びましたが続行しました（期待:${this.expectedSequence - 1}, 受信:${sequenceNumber}）`,
-                                'info'
-                            );
+                        // 重複チェック
+                        if (this.receivedChunks.some(c => c.index === chunkData.index)) {
+                            return;
                         }
+
+                        this.receivedChunks.push(chunkData);
+                        this.receivedChunks.sort((a, b) => a.index - b.index);
+
+                        this.updateReceiverStatus(
+                            `チャンク ${chunkData.index + 1} を受信しました（${this.receivedChunks.length} 個）`,
+                            'success'
+                        );
+
+                        this.updateMidiInfo();
+                        this.tryPlayNextChunk();
                     }
-                    // sequenceNumber < expectedSequence の場合は古いデータなので無視
+                } catch (error) {
+                    console.error('QRコード処理エラー:', error);
                 }
             }
 
-            updateFPS() {
-                this.frameCount++;
-                const now = performance.now();
-                if (now - this.lastFPSTime >= 1000) {
-                    const fps = Math.round(this.frameCount * 1000 / (now - this.lastFPSTime));
-                    this.fpsDisplay.textContent = `${fps} FPS`;
-                    this.frameCount = 0;
-                    this.lastFPSTime = now;
+            updateMidiInfo() {
+                if (this.receivedChunks.length === 0) return;
+
+                const info = `受信チャンク: ${this.receivedChunks.length} 個\n`;
+                let details = '';
+
+                this.receivedChunks.forEach(chunk => {
+                    details += `チャンク ${chunk.index}: ${chunk.notes.length} 音符\n`;
+                });
+
+                this.midiInfo.textContent = info + details;
+            }
+
+            async tryPlayNextChunk() {
+                if (this.receivedChunks.length === 0) return;
+
+                // どのチャンクでも受信したら再生開始可能
+                if (!this.isPlaying) {
+                    this.playBtn.disabled = false;
+
+                    // 自動再生設定があれば即座に開始
+                    if (this.autoPlay.checked && this.receivedChunks.length === 1) {
+                        await this.playMidi();
+                    }
                 }
+            }
+
+            async playMidi() {
+                if (this.receivedChunks.length === 0) return;
+
+                this.isPlaying = true;
+                this.playBtn.disabled = true;
+                this.stopPlayBtn.disabled = false;
+                this.updateReceiverStatus('MIDI再生中...', 'playing');
+
+                this.currentPlayTime = 0;
+                this.playReceivedChunks();
+            }
+
+            async playReceivedChunks() {
+                // 受信済みのチャンクから連続する部分を見つけて再生
+                const sortedChunks = this.receivedChunks.sort((a, b) => a.index - b.index);
+
+                for (let i = 0; i < sortedChunks.length && this.isPlaying; i++) {
+                    const chunk = sortedChunks[i];
+
+                    this.updateProgress(i, sortedChunks.length);
+                    this.updateReceiverStatus(
+                        `チャンク ${chunk.index + 1} を再生中... (${i + 1}/${sortedChunks.length})`,
+                        'playing'
+                    );
+
+                    // 並行して音符を再生
+                    const notePromises = chunk.notes.map(note => {
+                        return new Promise(resolve => {
+                            setTimeout(() => {
+                                if (this.isPlaying) {
+                                    this.synth.triggerAttackRelease(
+                                        note.pitch,
+                                        note.duration
+                                    );
+                                }
+                                resolve();
+                            }, note.time * 1000);
+                        });
+                    });
+
+                    // このチャンクの全音符の再生開始を待つ
+                    await Promise.all(notePromises);
+
+                    // チャンクの再生時間分待機
+                    await new Promise(resolve => setTimeout(resolve, chunk.duration * 1000));
+
+                    // 次のチャンクが受信済みでない場合は待機
+                    if (i + 1 < sortedChunks.length) {
+                        const nextChunkIndex = sortedChunks[i].index + 1;
+                        const nextChunk = sortedChunks.find(c => c.index === nextChunkIndex);
+
+                        if (!nextChunk) {
+                            // 次のチャンクを待機
+                            this.updateReceiverStatus(
+                                `次のチャンク (${nextChunkIndex + 1}) を待機中...`,
+                                'info'
+                            );
+
+                            // 次のチャンクが来るまで待機（最大10秒）
+                            let waitTime = 0;
+                            while (waitTime < 10000 && this.isPlaying) {
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                                waitTime += 100;
+
+                                // 新しいチャンクが受信されたかチェック
+                                const updatedChunk = this.receivedChunks.find(c => c.index === nextChunkIndex);
+                                if (updatedChunk) {
+                                    sortedChunks.splice(i + 1, 0, updatedChunk);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (this.isPlaying) {
+                    this.stopMidi();
+                    this.updateReceiverStatus('再生完了', 'success');
+                }
+            }
+
+            stopMidi() {
+                this.isPlaying = false;
+                this.playBtn.disabled = false;
+                this.stopPlayBtn.disabled = true;
+                this.synth.releaseAll();
+                this.updateProgress(0, 1);
+            }
+
+            updateProgress(current, total) {
+                const percent = total > 0 ? (current / total) * 100 : 0;
+                this.playProgress.style.width = `${percent}%`;
             }
 
             clearData() {
-                this.receivedData = '';
-                this.isReceiving = false;
-                this.isCompleted = false;
-                this.lastProcessedSequence = -1;
-                this.expectedSequence = 0;
-                this.waitingForNextCycle = false;
-                this.updateReceivedData();
-                this.updateReaderStatus('データをクリアしました', 'info');
+                this.receivedChunks = [];
+                this.stopMidi();
+                this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
+                this.updateReceiverStatus('データをクリアしました', 'info');
             }
 
-            updateReaderStatus(message, type) {
-                this.readerStatus.textContent = message;
-                this.readerStatus.className = `status ${type}`;
+            updateReceiverStatus(message, type) {
+                this.receiverStatus.textContent = message;
+                this.receiverStatus.className = `status ${type}`;
             }
 
-            updateReceivedData() {
-                this.receivedDataDisplay.textContent = this.receivedData || '受信データがここに表示されます...';
+            // 送信側メソッド
+            async loadMidiFile() {
+                const file = this.midiFile.files[0];
+                if (!file) {
+                    this.updateSenderStatus('MIDIファイルを選択してください', 'error');
+                    return;
+                }
+
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
+                    this.originalMidi = new Midi(arrayBuffer);
+
+                    this.displayMidiInfo();
+                    this.generateBtn.disabled = false;
+                    this.updateSenderStatus('MIDIファイルを読み込みました', 'success');
+                } catch (error) {
+                    this.updateSenderStatus('MIDI読み込みエラー: ' + error.message, 'error');
+                }
+            }
+
+            displayMidiInfo() {
+                if (!this.originalMidi) return;
+
+                const info = `
+ファイル名: ${this.midiFile.files[0].name}
+トラック数: ${this.originalMidi.tracks.length}
+演奏時間: ${this.originalMidi.duration.toFixed(2)} 秒
+音符数: ${this.originalMidi.tracks.reduce((sum, track) => sum + track.notes.length, 0)}
+                `.trim();
+
+                this.senderMidiInfo.textContent = info;
             }
 
             generateQRCodes() {
-                const data = this.dataInput.value;
-                if (!data.trim()) {
-                    this.updateSenderStatus('送信するデータを入力してください', 'error');
-                    return;
-                }
+                if (!this.originalMidi) return;
 
-                const chunkSize = parseInt(this.chunkSize.value);
-                const startFlag = this.senderStartFlag.value;
-                const endFlag = this.senderEndFlag.value;
-
+                const chunkDuration = parseFloat(this.chunkSeconds.value);
                 this.qrChunks = [];
-                let sequenceNumber = 0;
 
-                // シーケンス番号のフォーマット用関数
-                const formatSequence = (num) => num.toString().padStart(3, '0');
+                // MIDIデータを時間ベースでチャンクに分割
+                const chunks = this.splitMidiByTime(this.originalMidi, chunkDuration);
 
-                // 最初のチャンクに開始フラグとシーケンス番号を付加
-                const seqPrefix = `SEQ:${formatSequence(sequenceNumber)}:`;
-                const availableSize = chunkSize - startFlag.length - seqPrefix.length;
+                chunks.forEach((chunk, index) => {
+                    const chunkData = {
+                        index: index,
+                        total: chunks.length,
+                        duration: chunkDuration,
+                        notes: chunk
+                    };
 
-                if (availableSize <= 0) {
-                    this.updateSenderStatus('チャンクサイズが小さすぎます', 'error');
-                    return;
-                }
-
-                const firstChunk = startFlag + seqPrefix + data.substring(0, availableSize);
-                this.qrChunks.push(firstChunk);
-                sequenceNumber++;
-
-                // 残りのデータをチャンクに分割
-                let remainingData = data.substring(availableSize);
-                while (remainingData.length > 0) {
-                    const seqPrefix = `SEQ:${formatSequence(sequenceNumber)}:`;
-                    const availableSize = chunkSize - seqPrefix.length;
-                    const chunk = seqPrefix + remainingData.substring(0, availableSize);
-                    this.qrChunks.push(chunk);
-                    remainingData = remainingData.substring(availableSize);
-                    sequenceNumber++;
-                }
-
-                // 最後にENDフラグを追加
-                this.qrChunks.push(endFlag);
+                    const qrData = 'MIDI:' + JSON.stringify(chunkData);
+                    this.qrChunks.push(qrData);
+                });
 
                 this.currentChunkIndex = 0;
-                this.flashCompleted = false;
                 this.flashBtn.disabled = false;
-                this.updateSenderStatus(`${this.qrChunks.length - 1} 個のデータQRコード + ENDフラグを生成しました`, 'success');
+                this.updateSenderStatus(`${this.qrChunks.length} 個のQRコードを生成しました`, 'success');
                 this.updateProgress();
 
                 // 最初のQRコードを表示
                 this.displayQRCode(this.qrChunks[0]);
+            }
+
+            splitMidiByTime(midi, chunkDuration) {
+                const chunks = [];
+                let currentTime = 0;
+
+                while (currentTime < midi.duration) {
+                    const endTime = currentTime + chunkDuration;
+                    const chunkNotes = [];
+
+                    midi.tracks.forEach(track => {
+                        track.notes.forEach(note => {
+                            if (note.time >= currentTime && note.time < endTime) {
+                                chunkNotes.push({
+                                    pitch: note.name,
+                                    time: note.time - currentTime,
+                                    duration: note.duration,
+                                    velocity: note.velocity
+                                });
+                            }
+                        });
+                    });
+
+                    if (chunkNotes.length > 0) {
+                        chunks.push(chunkNotes);
+                    }
+
+                    currentTime = endTime;
+                }
+
+                return chunks;
             }
 
             displayQRCode(data) {
@@ -583,7 +628,7 @@
                         size: 300,
                         background: 'white',
                         foreground: 'black',
-                        level: 'M'
+                        level: 'L'
                     });
                 } catch (error) {
                     this.updateSenderStatus('QRコード生成エラー: ' + error.message, 'error');
@@ -591,31 +636,20 @@
             }
 
             startFlashing() {
-                if (this.qrChunks.length === 0) {
-                    this.updateSenderStatus('まずQRコードを生成してください', 'error');
-                    return;
-                }
+                if (this.qrChunks.length === 0) return;
 
-                this.currentChunkIndex = 0;
-                this.flashCompleted = false;
                 const fps = parseInt(this.flashFPS.value);
                 const interval = 1000 / fps;
 
                 this.flashInterval = setInterval(() => {
                     this.displayQRCode(this.qrChunks[this.currentChunkIndex]);
-                    this.updateProgress();
-
-                    this.currentChunkIndex++;
-
-                    // 全てのQRコードを送信したらループして最初から
-                    if (this.currentChunkIndex >= this.qrChunks.length) {
-                        this.currentChunkIndex = 0; // 最初から再開
-                    }
+                    this.currentChunkIndex = (this.currentChunkIndex + 1) % this.qrChunks.length;
+                    this.updateProgressDisplay();
                 }, interval);
 
                 this.flashBtn.disabled = true;
                 this.stopFlashBtn.disabled = false;
-                this.updateSenderStatus(`${fps} FPS でフラッシュ送信中（ループ）...`, 'success');
+                this.updateSenderStatus(`${fps} FPS でフラッシュ送信中...`, 'success');
             }
 
             stopFlashing() {
@@ -628,20 +662,19 @@
                 this.updateSenderStatus('フラッシュ送信を停止しました', 'info');
             }
 
+            updateProgressDisplay() {
+                this.progressDisplay.textContent = `${this.currentChunkIndex + 1} / ${this.qrChunks.length}`;
+            }
+
             updateSenderStatus(message, type) {
                 this.senderStatus.textContent = message;
                 this.senderStatus.className = `status ${type}`;
-            }
-
-            updateProgress() {
-                const current = Math.min(this.currentChunkIndex + 1, this.qrChunks.length);
-                this.progressDisplay.textContent = `${current} / ${this.qrChunks.length}`;
             }
         }
 
         // アプリケーション初期化
         document.addEventListener('DOMContentLoaded', () => {
-            new FlashQRApp();
+            new MIDIQRStreaming();
         });
     </script>
 </body>
