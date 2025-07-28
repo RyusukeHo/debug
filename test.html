@@ -219,8 +219,8 @@
             </div>
 
             <div class="controls">
-                <span class="label">チャンク秒数:</span>
-                <input type="number" id="chunkSeconds" value="1" min="0.5" max="10" step="0.1">
+                <span class="label">チャンク音符数:</span>
+                <input type="number" id="chunkNoteCount" value="20" min="5" max="100" step="5">
                 <span class="label">送信FPS:</span>
                 <input type="number" id="flashFPS" value="10" min="1" max="30">
             </div>
@@ -262,9 +262,10 @@
                 this.playedChunks = new Set();
                 this.isPlaying = false;
                 this.synth = null;
-                this.playbackInterval = null;
+                this.playbackTimeout = null;
                 this.isPlayingChunk = false;
-                this.preparedChunks = new Map(); // 事前準備済みチャンクデータ
+                this.preparedChunks = new Map();
+                this.currentPlayTime = 0;
 
                 // 送信側
                 this.originalMidi = null;
@@ -292,7 +293,7 @@
                 // 送信側
                 this.midiFile = document.getElementById('midiFile');
                 this.loadMidiBtn = document.getElementById('loadMidiBtn');
-                this.chunkSeconds = document.getElementById('chunkSeconds');
+                this.chunkNoteCount = document.getElementById('chunkNoteCount');
                 this.flashFPS = document.getElementById('flashFPS');
                 this.generateBtn = document.getElementById('generateBtn');
                 this.flashBtn = document.getElementById('flashBtn');
@@ -386,19 +387,18 @@
                     if (data.startsWith('M:')) {
                         const compressedData = JSON.parse(data.substring(2));
 
-                        // 圧縮されたデータを復元
                         const chunkData = {
                             index: compressedData.i,
                             total: compressedData.t,
-                            duration: compressedData.d,
-                            startTime: compressedData.s,
-                            endTime: compressedData.e,
                             tempo: compressedData.b,
-                            notes: compressedData.n.map(note => ({
-                                pitch: note.p,
-                                time: note.t,
-                                duration: note.d,
-                                velocity: note.v
+                            startTime: compressedData.s,
+                            timeGroups: compressedData.g.map(group => ({
+                                time: group.t,
+                                notes: group.n.map(note => ({
+                                    pitch: note.p,
+                                    duration: note.d,
+                                    velocity: note.v
+                                }))
                             }))
                         };
 
@@ -410,13 +410,14 @@
                         this.receivedChunks.push(chunkData);
                         this.receivedChunks.sort((a, b) => a.index - b.index);
 
+                        const totalNotes = chunkData.timeGroups.reduce((sum, group) => sum + group.notes.length, 0);
                         this.updateReceiverStatus(
-                            `チャンク ${chunkData.index + 1} 受信 (${this.receivedChunks.length}個)`,
+                            `チャンク ${chunkData.index + 1} 受信 (${totalNotes}音符, ${this.receivedChunks.length}個)`,
                             'success'
                         );
 
                         this.updateMidiInfo();
-                        this.updateReceivedProgress(); // 受信プログレスを更新
+                        this.updateReceivedProgress();
                         this.tryAutoPlay();
                     }
                 } catch (error) {
@@ -433,7 +434,9 @@
                 this.receivedChunks.forEach(chunk => {
                     const played = this.playedChunks.has(chunk.index) ? '✓' : '○';
                     const prepared = this.preparedChunks.has(chunk.index) ? '🚀' : '⏳';
-                    info += `${played}${prepared} チャンク${chunk.index + 1}: ${chunk.notes.length}音符\n`;
+                    const totalNotes = chunk.timeGroups.reduce((sum, group) => sum + group.notes.length, 0);
+                    const timeGroups = chunk.timeGroups.length;
+                    info += `${played}${prepared} チャンク${chunk.index + 1}: ${totalNotes}音符(${timeGroups}グループ)\n`;
                 });
 
                 this.midiInfo.textContent = info;
@@ -463,53 +466,46 @@
                 this.playBtn.disabled = true;
                 this.stopPlayBtn.disabled = false;
                 this.updateReceiverStatus('再生中...', 'playing');
+                this.currentPlayTime = 0;
 
-                this.startPlaybackLoop();
+                this.scheduleNextChunk();
             }
 
-            startPlaybackLoop() {
-                this.playbackInterval = setInterval(() => {
-                    if (!this.isPlaying || this.isPlayingChunk) return;
+            async scheduleNextChunk() {
+                if (!this.isPlaying) return;
 
-                    // 未再生チャンクを取得
-                    const unplayedChunks = this.receivedChunks.filter(chunk =>
-                        !this.playedChunks.has(chunk.index)
-                    );
+                // 次に再生すべきチャンクを取得
+                const nextChunk = this.getNextChunkToPlay();
+                if (!nextChunk) {
+                    // すべて再生完了または待機中
+                    this.playbackTimeout = setTimeout(() => this.scheduleNextChunk(), 100);
+                    return;
+                }
 
-                    if (unplayedChunks.length === 0) return;
-
-                    // 最小インデックスのチャンクを再生
-                    unplayedChunks.sort((a, b) => a.index - b.index);
-                    const nextChunk = unplayedChunks[0];
-
-                    this.playChunkSequentially(nextChunk);
-
-                }, 50); // 50ms間隔でチェック
+                await this.playChunk(nextChunk);
             }
 
-            prepareChunk(chunk) {
-                // チャンクデータを事前準備（再生用に最適化）
-                const preparedNotes = chunk.notes.map(note => ({
-                    pitch: note.pitch,
-                    duration: note.duration,
-                    velocity: note.velocity,
-                    playTime: Date.now() // 準備時刻を記録
-                }));
+            getNextChunkToPlay() {
+                // 現在時刻に最も近い未再生チャンクを取得
+                const unplayedChunks = this.receivedChunks.filter(chunk =>
+                    !this.playedChunks.has(chunk.index) &&
+                    chunk.startTime <= this.currentPlayTime + 0.1 // 少し先読み
+                );
 
-                this.preparedChunks.set(chunk.index, {
-                    ...chunk,
-                    notes: preparedNotes,
-                    prepared: true,
-                    preparedAt: Date.now()
-                });
+                if (unplayedChunks.length === 0) return null;
+
+                // 開始時刻が最も早いものを選択
+                unplayedChunks.sort((a, b) => a.startTime - b.startTime);
+                return unplayedChunks[0];
             }
 
-            async playChunkSequentially(chunk) {
+            async playChunk(chunk) {
                 this.isPlayingChunk = true;
                 this.playedChunks.add(chunk.index);
 
+                const totalNotes = chunk.timeGroups.reduce((sum, group) => sum + group.notes.length, 0);
                 this.updateReceiverStatus(
-                    `チャンク ${chunk.index + 1} 再生中 (${this.playedChunks.size}個再生済み)`,
+                    `チャンク ${chunk.index + 1} 再生中 (${totalNotes}音符, ${this.playedChunks.size}個再生済み)`,
                     'playing'
                 );
 
@@ -517,39 +513,41 @@
                 this.updateReceivedProgress();
                 this.updateMidiInfo();
 
-                // 事前準備済みデータを使用
-                const preparedChunk = this.preparedChunks.get(chunk.index) || chunk;
-                await this.playChunkImmediate(preparedChunk);
-
-                // チャンクの再生時間分待機
-                await new Promise(resolve => setTimeout(resolve, chunk.duration * 1000));
-
-                this.isPlayingChunk = false;
-            }
-
-            async playChunkImmediate(chunk) {
-                // 事前準備済みデータで即座に再生（ラグ最小化）
-                const startTime = Date.now();
-
-                chunk.notes.forEach(note => {
-                    const timeout = note.time * 1000;
+                // 時間グループごとに再生
+                let maxEndTime = 0;
+                for (const timeGroup of chunk.timeGroups) {
+                    const delay = (timeGroup.time - this.currentPlayTime) * 1000;
 
                     setTimeout(() => {
                         if (this.isPlaying && this.synth) {
-                            try {
-                                // 即座に発音（事前準備済みなので処理が高速）
-                                this.synth.triggerAttackRelease(
-                                    note.pitch,
-                                    note.duration,
-                                    undefined,
-                                    note.velocity
-                                );
-                            } catch (error) {
-                                console.error('音符再生エラー:', error);
-                            }
+                            // 同じ時刻の音符を同時に再生（和音対応）
+                            timeGroup.notes.forEach(note => {
+                                try {
+                                    this.synth.triggerAttackRelease(
+                                        note.pitch,
+                                        note.duration,
+                                        undefined,
+                                        note.velocity
+                                    );
+                                } catch (error) {
+                                    console.error('音符再生エラー:', error);
+                                }
+                            });
                         }
-                    }, timeout);
-                });
+                    }, Math.max(0, delay));
+
+                    // 最大終了時刻を計算
+                    const groupEndTime = timeGroup.time + Math.max(...timeGroup.notes.map(n => n.duration || 0.5));
+                    maxEndTime = Math.max(maxEndTime, groupEndTime);
+                }
+
+                // チャンク再生完了まで待機
+                const waitTime = (maxEndTime - this.currentPlayTime) * 1000;
+                setTimeout(() => {
+                    this.currentPlayTime = maxEndTime;
+                    this.isPlayingChunk = false;
+                    this.scheduleNextChunk();
+                }, Math.max(0, waitTime));
             }
 
             stopMidi() {
@@ -557,10 +555,11 @@
                 this.isPlayingChunk = false;
                 this.playBtn.disabled = false;
                 this.stopPlayBtn.disabled = true;
+                this.currentPlayTime = 0;
 
-                if (this.playbackInterval) {
-                    clearInterval(this.playbackInterval);
-                    this.playbackInterval = null;
+                if (this.playbackTimeout) {
+                    clearTimeout(this.playbackTimeout);
+                    this.playbackTimeout = null;
                 }
 
                 if (this.synth) {
@@ -598,8 +597,9 @@
             clearData() {
                 this.receivedChunks = [];
                 this.playedChunks.clear();
-                this.preparedChunks.clear(); // 事前準備データもクリア
+                this.preparedChunks.clear();
                 this.isPlayingChunk = false;
+                this.currentPlayTime = 0;
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
                 this.updateReceivedProgress();
@@ -634,21 +634,25 @@
             displayMidiInfo() {
                 if (!this.originalMidi) return;
 
-                const chunkDuration = parseFloat(this.chunkSeconds.value);
-                const estimatedChunks = Math.ceil(this.originalMidi.duration / chunkDuration);
+                const chunkNoteCount = parseInt(this.chunkNoteCount.value);
                 const totalNotes = this.originalMidi.tracks.reduce((sum, track) => sum + track.notes.length, 0);
+                const estimatedChunks = Math.ceil(totalNotes / chunkNoteCount);
                 const fps = parseInt(this.flashFPS.value);
 
-                // データ圧縮効果の推定
-                const avgNotesPerChunk = totalNotes / estimatedChunks;
-                const estimatedChunkSize = 50 + (avgNotesPerChunk * 25); // 大まかな推定
+                // 同時刻音符のグループ化効果を考慮
+                const uniqueTimes = new Set();
+                this.originalMidi.tracks.forEach(track => {
+                    track.notes.forEach(note => {
+                        uniqueTimes.add(Math.round(note.time * 1000) / 1000); // 1ms精度で丸め
+                    });
+                });
 
                 const info = `
 ファイル: ${this.midiFile.files[0].name}
 演奏時間: ${this.originalMidi.duration.toFixed(1)}秒
 音符数: ${totalNotes}
+ユニーク時刻: ${uniqueTimes.size}
 予想チャンク数: ${estimatedChunks}
-予想チャンクサイズ: ~${Math.round(estimatedChunkSize)}文字
 転送予想時間: ${(estimatedChunks / fps).toFixed(1)}秒
                 `.trim();
 
@@ -658,25 +662,24 @@
             generateQRCodes() {
                 if (!this.originalMidi) return;
 
-                const chunkDuration = parseFloat(this.chunkSeconds.value);
+                const chunkNoteCount = parseInt(this.chunkNoteCount.value);
                 this.qrChunks = [];
 
-                const chunks = this.splitMidiByTime(this.originalMidi, chunkDuration);
+                const chunks = this.splitMidiByNoteCount(this.originalMidi, chunkNoteCount);
 
                 chunks.forEach((chunk, index) => {
-                    // データを圧縮（キー短縮）
                     const chunkData = {
-                        i: index,                    // index → i
-                        t: chunks.length,           // total → t
-                        d: chunkDuration,           // duration → d
-                        s: chunk.startTime,         // startTime → s
-                        e: chunk.endTime,           // endTime → e
-                        b: chunk.tempo || 120,      // tempo → b (bpm)
-                        n: chunk.notes.map(note => ({
-                            p: note.pitch,          // pitch → p
-                            t: note.time,           // time → t
-                            d: note.duration,       // duration → d
-                            v: note.velocity || 0.8 // velocity → v
+                        i: index,
+                        t: chunks.length,
+                        b: chunk.tempo || 120,
+                        s: chunk.startTime,
+                        g: chunk.timeGroups.map(group => ({
+                            t: group.time,
+                            n: group.notes.map(note => ({
+                                p: note.pitch,
+                                d: note.duration,
+                                v: note.velocity || 0.8
+                            }))
                         }))
                     };
 
@@ -694,37 +697,77 @@
                 }
             }
 
-            splitMidiByTime(midi, chunkDuration) {
-                const chunks = [];
-                let currentTime = 0;
-
-                while (currentTime < midi.duration) {
-                    const endTime = currentTime + chunkDuration;
-                    const chunkNotes = [];
-
-                    midi.tracks.forEach(track => {
-                        track.notes.forEach(note => {
-                            if (note.time >= currentTime && note.time < endTime) {
-                                chunkNotes.push({
-                                    pitch: note.name,
-                                    time: note.time - currentTime,
-                                    duration: note.duration,
-                                    velocity: note.velocity || 0.8
-                                });
-                            }
+            splitMidiByNoteCount(midi, maxNotesPerChunk) {
+                // すべての音符を時刻順にソート
+                const allNotes = [];
+                midi.tracks.forEach(track => {
+                    track.notes.forEach(note => {
+                        allNotes.push({
+                            pitch: note.name,
+                            time: note.time,
+                            duration: note.duration,
+                            velocity: note.velocity || 0.8
                         });
                     });
+                });
 
-                    if (chunkNotes.length > 0) {
-                        chunks.push({
-                            notes: chunkNotes,
-                            startTime: currentTime,
-                            endTime: endTime,
-                            tempo: midi.header.tempos[0]?.bpm || 120
-                        });
+                allNotes.sort((a, b) => a.time - b.time);
+
+                // 同じ時刻の音符をグループ化
+                const timeGroups = [];
+                let currentTime = null;
+                let currentGroup = null;
+
+                allNotes.forEach(note => {
+                    const roundedTime = Math.round(note.time * 1000) / 1000; // 1ms精度で丸め
+
+                    if (currentTime !== roundedTime) {
+                        if (currentGroup) {
+                            timeGroups.push(currentGroup);
+                        }
+                        currentTime = roundedTime;
+                        currentGroup = {
+                            time: roundedTime,
+                            notes: []
+                        };
                     }
 
-                    currentTime = endTime;
+                    currentGroup.notes.push({
+                        pitch: note.pitch,
+                        duration: note.duration,
+                        velocity: note.velocity
+                    });
+                });
+
+                if (currentGroup) {
+                    timeGroups.push(currentGroup);
+                }
+
+                // チャンクに分割（音符数ベース）
+                const chunks = [];
+                let currentChunk = null;
+                let noteCount = 0;
+
+                timeGroups.forEach(timeGroup => {
+                    // 新しいチャンクが必要か判定
+                    if (!currentChunk || noteCount + timeGroup.notes.length > maxNotesPerChunk) {
+                        if (currentChunk) {
+                            chunks.push(currentChunk);
+                        }
+                        currentChunk = {
+                            timeGroups: [],
+                            startTime: timeGroup.time,
+                            tempo: midi.header.tempos[0]?.bpm || 120
+                        };
+                        noteCount = 0;
+                    }
+
+                    currentChunk.timeGroups.push(timeGroup);
+                    noteCount += timeGroup.notes.length;
+                });
+
+                if (currentChunk) {
+                    chunks.push(currentChunk);
                 }
 
                 return chunks;
@@ -732,22 +775,21 @@
 
             displayQRCode(data) {
                 try {
-                    // データサイズに応じて設定を最適化（誤り訂正レベルを上げる）
                     const dataLength = data.length;
-                    let level = 'H';  // デフォルトをHigh(最高)に
+                    let level = 'H';
                     let size = 350;
 
                     if (dataLength < 200) {
-                        level = 'H';     // 小さなデータも最高レベル
-                        size = 400;      // 大きく表示
+                        level = 'H';
+                        size = 400;
                     } else if (dataLength < 400) {
-                        level = 'Q';     // 中程度データはQuartile
+                        level = 'Q';
                         size = 380;
                     } else if (dataLength < 600) {
-                        level = 'M';     // 大きなデータはMedium
+                        level = 'M';
                         size = 350;
                     } else {
-                        level = 'L';     // 超大容量のみLow
+                        level = 'L';
                         size = 320;
                     }
 
@@ -760,7 +802,6 @@
                         level: level
                     });
 
-                    // デバッグ情報を表示
                     if (this.currentChunkIndex === 0) {
                         this.updateSenderStatus(
                             `送信中 (${dataLength}文字, ${level}レベル, ${size}px)`,
