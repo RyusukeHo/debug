@@ -311,16 +311,32 @@
                 try {
                     await Tone.start();
 
-                    // まず基本的なシンセサイザーに戻す
-                    this.synth = new Tone.PolySynth(Tone.Synth).toDestination();
+                    // マスターボリュームコントロールを追加
+                    // これは「総音量の調整器」として機能します
+                    this.masterVolume = new Tone.Volume(-12); // -12dB（約1/4の音量）
+
+                    // 基本的なシンセサイザーにボリューム制御を追加
+                    this.synth = new Tone.PolySynth({
+                        maxPolyphony: 32, // 同時発音数を32に制限（重要な改善点）
+                        voice: Tone.Synth,
+                        options: {
+                            envelope: {
+                                attack: 0.005,  // 少し自然な立ち上がりに
+                                release: 0.3    // 少し自然な減衰に
+                            }
+                        }
+                    }).connect(this.masterVolume).toDestination();
 
                     if (this.debugMode.checked) {
-                        console.log('基本オーディオシステム初期化完了');
+                        console.log('安定化オーディオシステム初期化完了 - 32音ポリフォニー, -12dBマスター音量');
                     }
                     return true;
                 } catch (error) {
                     console.error('Audio init failed:', error);
-                    return false;
+                    // フォールバック：最もシンプルな構成
+                    this.synth = new Tone.MonoSynth().toDestination();
+                    console.log('フォールバック：モノフォニックシンセサイザーで初期化');
+                    return true;
                 }
             }
 
@@ -575,65 +591,95 @@
 
                     this.currentPlaybackTime = (Date.now() - this.playbackStartTime) / 1000;
 
-                    // キューから再生すべき音符を取り出して実行
-                    const tolerance = 0.1; // 許容範囲を100msに拡大（より寛容に）
+                    // バッチ処理：一度に複数の音符を処理
+                    // これにより、タイミング精度が大幅に向上します
+                    const lookAheadTime = 0.2; // 200ms先まで事前スケジュール
+                    const tolerance = 0.1;     // 許容範囲を広めに設定
+                    const maxNotesPerBatch = 50; // 一度に処理する音符数を制限
+
+                    let notesInBatch = 0;
                     let notesPlayed = 0;
 
-                    // キューの先頭から現在時刻で再生すべき音符を探す
-                    while (this.noteQueue.length > 0) {
+                    // バッチ処理：条件に合う音符をまとめて処理
+                    while (this.noteQueue.length > 0 && notesInBatch < maxNotesPerBatch) {
                         const nextNote = this.noteQueue[0];
 
-                        // 再生時刻が来た、または少し過ぎた音符を処理
-                        if (nextNote.time <= this.currentPlaybackTime + tolerance) {
-                            // キューから音符を取り出し（必ず再生する）
+                        // 事前スケジュール範囲内の音符を処理
+                        if (nextNote.time <= this.currentPlaybackTime + lookAheadTime + tolerance) {
                             const noteToPlay = this.noteQueue.shift();
+                            notesInBatch++;
 
-                            // 音符を再生（基本的な方法に戻す）
+                            // 音符を再生するタイミングを計算
+                            const playDelay = Math.max(0, noteToPlay.time - this.currentPlaybackTime);
+
+                            // 音量を動的に調整（同時発音数に応じて音量を下げる）
+                            const adjustedVelocity = this.calculateSafeVelocity(noteToPlay.velocity || 0.8);
+
                             try {
+                                // Tone.jsのスケジューリング機能を使用
+                                // これにより、より正確なタイミングで音符を再生できます
                                 this.synth.triggerAttackRelease(
                                     noteToPlay.pitch,
                                     noteToPlay.duration || 0.5,
-                                    undefined,
-                                    noteToPlay.velocity || 0.8
+                                    "+" + playDelay.toFixed(3), // 相対的な時間指定
+                                    adjustedVelocity
                                 );
                                 notesPlayed++;
 
-                                // 再生済みリストに追加
                                 this.playedNotes.push({
                                     ...noteToPlay,
-                                    actualPlayTime: this.currentPlaybackTime
+                                    actualPlayTime: this.currentPlaybackTime + playDelay,
+                                    scheduledDelay: playDelay
                                 });
                             } catch (error) {
                                 if (this.debugMode.checked) {
-                                    console.error('音符再生エラー:', error);
+                                    console.error('音符再生エラー:', error, 'pitch:', noteToPlay.pitch);
                                 }
                             }
                         } else {
-                            // 次の音符はまだ再生時刻ではない
+                            // まだ処理時刻ではない音符に到達
                             break;
                         }
                     }
 
+                    // パフォーマンス情報の表示（デバッグ時）
                     if (this.debugMode.checked && notesPlayed > 0) {
-                        console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符再生, キュー残り: ${this.noteQueue.length}`);
+                        const activeVoices = this.synth.activeVoices ? this.synth.activeVoices : 'unknown';
+                        console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符スケジュール済み, アクティブ音声: ${activeVoices}, キュー残り: ${this.noteQueue.length}`);
                     }
 
                     this.updateProgress();
 
-                    // キューが空になったら再生終了チェック
+                    // 再生完了チェック
                     if (this.noteQueue.length === 0 && this.receivedChunks.size > 0) {
                         const totalChunks = Math.max(...Array.from(this.receivedChunks.values()).map(c => c.total));
                         if (this.receivedChunks.size >= totalChunks) {
-                            // 全てのチャンクを受信完了していれば再生終了
                             setTimeout(() => {
                                 if (this.noteQueue.length === 0) {
                                     this.updateReceiverStatus('再生完了', 'success');
                                 }
-                            }, 2000); // 2秒待って本当に終了か確認
+                            }, 2000);
                         }
                     }
 
-                }, 10); // 10msに短縮してより高精度に
+                }, 50); // 50msに変更（負荷軽減とタイミング精度のバランス）
+            }
+
+            // 安全な音量計算：同時発音数を考慮した動的音量調整
+            calculateSafeVelocity(originalVelocity) {
+                // 現在のアクティブな音声数を推定
+                // （実際のTone.jsからは正確な数値を取得できないため、推定値を使用）
+                const estimatedActiveVoices = Math.min(32, this.playedNotes.length);
+
+                // 同時発音数に応じて音量を調整
+                // 多くの音が同時に鳴るほど、個々の音量を下げる
+                const voiceReductionFactor = Math.max(0.1, 1.0 / Math.sqrt(estimatedActiveVoices + 1));
+
+                // 元の音量に調整倍率を適用
+                const adjustedVelocity = originalVelocity * voiceReductionFactor;
+
+                // 最終的な音量を安全な範囲に制限
+                return Math.max(0.05, Math.min(0.7, adjustedVelocity));
             }
 
             stopMidi() {
