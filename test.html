@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MIDI QRストリーミング</title>
+    <title>MIDI QRストリーミング - 改良版</title>
     <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
     <script src="https://unpkg.com/qrious@4.0.2/dist/qrious.min.js"></script>
     <script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
@@ -145,6 +145,8 @@
             margin: 10px 0;
             font-family: monospace;
             font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
         }
 
         .progress-bar {
@@ -162,6 +164,16 @@
             width: 0%;
             transition: width 0.3s;
             border-radius: 10px;
+        }
+
+        .timing-info {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 11px;
         }
 
         @media (max-width: 768px) {
@@ -194,6 +206,10 @@
                     <input type="checkbox" id="autoPlay" checked>
                     自動再生
                 </label>
+                <label>
+                    <input type="checkbox" id="debugMode">
+                    デバッグモード
+                </label>
             </div>
 
             <div id="receiverStatus" class="status info">カメラを開始してください</div>
@@ -202,6 +218,10 @@
                 <div id="receivedProgress" class="progress-fill" style="background: #bee5eb; z-index: 1;"></div>
                 <div id="playProgress" class="progress-fill"
                     style="background: #007bff; z-index: 2; position: absolute; top: 0;"></div>
+            </div>
+
+            <div class="timing-info" id="timingInfo">
+                タイミング情報がここに表示されます...
             </div>
 
             <div class="midi-info" id="midiInfo">
@@ -220,9 +240,9 @@
 
             <div class="controls">
                 <span class="label">チャンク音符数:</span>
-                <input type="number" id="chunkNoteCount" value="20" min="5" max="100" step="5">
+                <input type="number" id="chunkNoteCount" value="15" min="5" max="50" step="5">
                 <span class="label">送信FPS:</span>
-                <input type="number" id="flashFPS" value="10" min="1" max="30">
+                <input type="number" id="flashFPS" value="8" min="1" max="20">
             </div>
 
             <div class="controls">
@@ -264,7 +284,8 @@
                 this.synth = null;
                 this.playbackInterval = null;
                 this.isPlayingChunk = false;
-                this.preparedChunks = new Map();
+                this.playbackStartTime = null;
+                this.currentPlaybackTime = 0;
 
                 // 送信側
                 this.originalMidi = null;
@@ -284,8 +305,10 @@
                 this.playBtn = document.getElementById('playBtn');
                 this.stopPlayBtn = document.getElementById('stopPlayBtn');
                 this.autoPlay = document.getElementById('autoPlay');
+                this.debugMode = document.getElementById('debugMode');
                 this.receiverStatus = document.getElementById('receiverStatus');
                 this.midiInfo = document.getElementById('midiInfo');
+                this.timingInfo = document.getElementById('timingInfo');
                 this.receivedProgress = document.getElementById('receivedProgress');
                 this.playProgress = document.getElementById('playProgress');
 
@@ -391,6 +414,8 @@
                             total: compressedData.t,
                             tempo: compressedData.b,
                             startTime: compressedData.s,
+                            endTime: compressedData.e,
+                            duration: compressedData.d,
                             timeGroups: compressedData.g.map(group => ({
                                 time: group.t,
                                 notes: group.n.map(note => ({
@@ -411,12 +436,13 @@
 
                         const totalNotes = chunkData.timeGroups.reduce((sum, group) => sum + group.notes.length, 0);
                         this.updateReceiverStatus(
-                            `チャンク ${chunkData.index + 1} 受信 (${totalNotes}音符, ${this.receivedChunks.length}個)`,
+                            `チャンク ${chunkData.index + 1} 受信 (${totalNotes}音符, ${chunkData.duration.toFixed(2)}秒)`,
                             'success'
                         );
 
                         this.updateMidiInfo();
                         this.updateReceivedProgress();
+                        this.updateTimingInfo();
                         this.tryAutoPlay();
                     }
                 } catch (error) {
@@ -428,17 +454,43 @@
                 if (this.receivedChunks.length === 0) return;
 
                 const totalChunks = this.receivedChunks[0].total || this.receivedChunks.length;
-                let info = `受信: ${this.receivedChunks.length} / ${totalChunks}\n`;
+                let info = `受信: ${this.receivedChunks.length} / ${totalChunks}\n\n`;
 
                 this.receivedChunks.forEach(chunk => {
                     const played = this.playedChunks.has(chunk.index) ? '✓' : '○';
-                    const prepared = this.preparedChunks.has(chunk.index) ? '🚀' : '⏳';
                     const totalNotes = chunk.timeGroups.reduce((sum, group) => sum + group.notes.length, 0);
                     const timeGroups = chunk.timeGroups.length;
-                    info += `${played}${prepared} チャンク${chunk.index + 1}: ${totalNotes}音符(${timeGroups}グループ)\n`;
+                    info += `${played} チャンク${chunk.index + 1}: ${totalNotes}音符(${timeGroups}グループ) `;
+                    info += `時間: ${chunk.startTime.toFixed(2)}s - ${chunk.endTime.toFixed(2)}s (${chunk.duration.toFixed(2)}s)\n`;
                 });
 
                 this.midiInfo.textContent = info;
+            }
+
+            updateTimingInfo() {
+                if (this.receivedChunks.length === 0) return;
+
+                let info = '=== タイミング分析 ===\n';
+
+                // チャンク間のギャップを分析
+                const sortedChunks = [...this.receivedChunks].sort((a, b) => a.index - b.index);
+
+                for (let i = 0; i < sortedChunks.length - 1; i++) {
+                    const current = sortedChunks[i];
+                    const next = sortedChunks[i + 1];
+                    const gap = next.startTime - current.endTime;
+
+                    info += `チャンク${current.index + 1} → ${next.index + 1}: `;
+                    info += `ギャップ ${gap.toFixed(3)}s\n`;
+                }
+
+                if (this.isPlaying) {
+                    const elapsed = (Date.now() - this.playbackStartTime) / 1000;
+                    info += `\n再生経過時間: ${elapsed.toFixed(2)}s\n`;
+                    info += `現在の楽曲時間: ${this.currentPlaybackTime.toFixed(2)}s\n`;
+                }
+
+                this.timingInfo.textContent = info;
             }
 
             async tryAutoPlay() {
@@ -449,7 +501,7 @@
                 }
             }
 
-            // 再生関連
+            // 改良された再生関連メソッド
             async playMidi() {
                 if (this.receivedChunks.length === 0) return;
 
@@ -464,81 +516,72 @@
                 this.isPlaying = true;
                 this.playBtn.disabled = true;
                 this.stopPlayBtn.disabled = false;
+                this.playbackStartTime = Date.now();
+                this.currentPlaybackTime = 0;
                 this.updateReceiverStatus('再生中...', 'playing');
 
-                this.startPlaybackLoop();
+                this.startContinuousPlayback();
             }
 
-            startPlaybackLoop() {
+            startContinuousPlayback() {
+                // 連続再生のためのタイマー
                 this.playbackInterval = setInterval(() => {
-                    if (!this.isPlaying || this.isPlayingChunk) return;
+                    if (!this.isPlaying) return;
 
-                    // 未再生チャンクを取得
-                    const unplayedChunks = this.receivedChunks.filter(chunk =>
-                        !this.playedChunks.has(chunk.index)
-                    );
+                    this.currentPlaybackTime = (Date.now() - this.playbackStartTime) / 1000;
 
-                    if (unplayedChunks.length === 0) return;
+                    // 現在時刻で再生すべきチャンクを探す（重複時も考慮）
+                    const playableChunks = this.receivedChunks.filter(chunk => {
+                        // まだ再生開始されていない && 開始時刻に達している
+                        return !this.playedChunks.has(chunk.index) &&
+                            this.currentPlaybackTime >= chunk.startTime - 0.1; // 0.1秒の余裕
+                    });
 
-                    // 最小インデックスのチャンクを再生
-                    unplayedChunks.sort((a, b) => a.index - b.index);
-                    const nextChunk = unplayedChunks[0];
+                    // 開始時刻順でソート
+                    playableChunks.sort((a, b) => a.startTime - b.startTime);
 
-                    this.playChunkSequentially(nextChunk);
+                    // 再生開始
+                    playableChunks.forEach(chunk => {
+                        this.playChunkAtCorrectTime(chunk);
+                        this.playedChunks.add(chunk.index);
+                    });
+
+                    this.updateProgress();
+                    this.updateTimingInfo();
 
                 }, 50); // 50ms間隔でチェック
             }
 
-            async playChunkSequentially(chunk) {
-                this.isPlayingChunk = true;
-                this.playedChunks.add(chunk.index);
+            playChunkAtCorrectTime(chunk) {
+                const chunkStartTime = chunk.startTime;
+                const currentTime = this.currentPlaybackTime;
+
+                if (this.debugMode.checked) {
+                    console.log(`チャンク${chunk.index + 1} 開始:`, {
+                        chunkStart: chunkStartTime.toFixed(3),
+                        currentTime: currentTime.toFixed(3),
+                        delay: (currentTime - chunkStartTime).toFixed(3)
+                    });
+                }
 
                 const totalNotes = chunk.timeGroups.reduce((sum, group) => sum + group.notes.length, 0);
                 this.updateReceiverStatus(
-                    `チャンク ${chunk.index + 1} 再生中 (${totalNotes}音符, ${this.playedChunks.size}個再生済み)`,
+                    `チャンク ${chunk.index + 1} 再生中 (${totalNotes}音符, ${chunk.duration.toFixed(2)}秒)`,
                     'playing'
                 );
 
-                this.updateProgress();
-                this.updateReceivedProgress();
-                this.updateMidiInfo();
-
-                // デバッグログ
-                console.log('再生チャンク:', chunk.index, 'グループ数:', chunk.timeGroups.length);
-
-                await this.playTimeGroups(chunk.timeGroups);
-
-                // チャンクの再生時間を計算（最後の音符の終了時刻）
-                let maxEndTime = 0;
-                chunk.timeGroups.forEach(group => {
-                    const groupEndTime = group.time + Math.max(...group.notes.map(n => n.duration || 0.5));
-                    maxEndTime = Math.max(maxEndTime, groupEndTime);
-                });
-
-                const firstTime = chunk.timeGroups.length > 0 ? chunk.timeGroups[0].time : 0;
-                const chunkDuration = Math.max(1000, (maxEndTime - firstTime) * 1000); // 最低1秒
-
-                console.log('チャンク再生時間:', chunkDuration, 'ms');
-
-                // チャンクの再生時間分待機
-                await new Promise(resolve => setTimeout(resolve, chunkDuration));
-
-                this.isPlayingChunk = false;
-            }
-
-            async playTimeGroups(timeGroups) {
-                if (timeGroups.length === 0) return;
-
-                const startTime = timeGroups[0].time;
-
-                timeGroups.forEach(timeGroup => {
-                    const delay = (timeGroup.time - startTime) * 1000;
+                // 時間グループを正確なタイミングで再生
+                chunk.timeGroups.forEach(timeGroup => {
+                    const noteTime = timeGroup.time;
+                    const playTime = noteTime - currentTime; // 現在からの相対時間
+                    const delay = Math.max(0, playTime * 1000); // ミリ秒、負の値は0に
 
                     setTimeout(() => {
                         if (this.isPlaying && this.synth) {
-                            console.log('再生:', timeGroup.notes.length, '音符 at', timeGroup.time);
+                            if (this.debugMode.checked) {
+                                console.log(`音符再生: ${timeGroup.notes.length}音符 at ${noteTime.toFixed(3)}s`);
+                            }
 
-                            // 同じ時刻の音符を同時に再生（和音対応）
                             timeGroup.notes.forEach(note => {
                                 try {
                                     this.synth.triggerAttackRelease(
@@ -552,8 +595,10 @@
                                 }
                             });
                         }
-                    }, Math.max(0, delay));
+                    }, delay);
                 });
+
+                this.updateMidiInfo();
             }
 
             stopMidi() {
@@ -573,6 +618,7 @@
 
                 this.updateReceiverStatus('停止', 'info');
                 this.updateProgress(0);
+                this.updateTimingInfo();
             }
 
             updateProgress(value = null) {
@@ -602,10 +648,10 @@
             clearData() {
                 this.receivedChunks = [];
                 this.playedChunks.clear();
-                this.preparedChunks.clear();
                 this.isPlayingChunk = false;
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
+                this.timingInfo.textContent = 'タイミング情報がここに表示されます...';
                 this.updateReceivedProgress();
                 this.updateReceiverStatus('データクリア', 'info');
             }
@@ -615,7 +661,7 @@
                 this.receiverStatus.className = `status ${type}`;
             }
 
-            // 送信側メソッド
+            // 送信側メソッド（改良版）
             async loadMidiFile() {
                 const file = this.midiFile.files[0];
                 if (!file) {
@@ -643,11 +689,10 @@
                 const estimatedChunks = Math.ceil(totalNotes / chunkNoteCount);
                 const fps = parseInt(this.flashFPS.value);
 
-                // 同時刻音符のグループ化効果を考慮
                 const uniqueTimes = new Set();
                 this.originalMidi.tracks.forEach(track => {
                     track.notes.forEach(note => {
-                        uniqueTimes.add(Math.round(note.time * 1000) / 1000); // 1ms精度で丸め
+                        uniqueTimes.add(Math.round(note.time * 1000) / 1000);
                     });
                 });
 
@@ -669,7 +714,7 @@
                 const chunkNoteCount = parseInt(this.chunkNoteCount.value);
                 this.qrChunks = [];
 
-                const chunks = this.splitMidiByNoteCount(this.originalMidi, chunkNoteCount);
+                const chunks = this.splitMidiByNoteCountWithTiming(this.originalMidi, chunkNoteCount);
 
                 chunks.forEach((chunk, index) => {
                     const chunkData = {
@@ -677,6 +722,8 @@
                         t: chunks.length,
                         b: chunk.tempo || 120,
                         s: chunk.startTime,
+                        e: chunk.endTime,
+                        d: chunk.duration,
                         g: chunk.timeGroups.map(group => ({
                             t: group.time,
                             n: group.notes.map(note => ({
@@ -701,8 +748,8 @@
                 }
             }
 
-            splitMidiByNoteCount(midi, maxNotesPerChunk) {
-                // すべての音符を時刻順にソート
+            splitMidiByNoteCountWithTiming(midi, maxNotesPerChunk) {
+                // すべての音符を収集して時刻順にソート
                 const allNotes = [];
                 midi.tracks.forEach(track => {
                     track.notes.forEach(note => {
@@ -717,13 +764,13 @@
 
                 allNotes.sort((a, b) => a.time - b.time);
 
-                // 同じ時刻の音符をグループ化
+                // 同時刻音符のグループ化
                 const timeGroups = [];
                 let currentTime = null;
                 let currentGroup = null;
 
                 allNotes.forEach(note => {
-                    const roundedTime = Math.round(note.time * 1000) / 1000; // 1ms精度で丸め
+                    const roundedTime = Math.round(note.time * 1000) / 1000;
 
                     if (currentTime !== roundedTime) {
                         if (currentGroup) {
@@ -747,7 +794,7 @@
                     timeGroups.push(currentGroup);
                 }
 
-                // チャンクに分割（音符数ベース）
+                // チャンクに分割（時間情報付き）
                 const chunks = [];
                 let currentChunk = null;
                 let noteCount = 0;
@@ -756,11 +803,19 @@
                     // 新しいチャンクが必要か判定
                     if (!currentChunk || noteCount + timeGroup.notes.length > maxNotesPerChunk) {
                         if (currentChunk) {
+                            // 前のチャンクの終了時間を計算
+                            const lastGroup = currentChunk.timeGroups[currentChunk.timeGroups.length - 1];
+                            const maxDuration = Math.max(...lastGroup.notes.map(n => n.duration || 0.5));
+                            currentChunk.endTime = lastGroup.time + maxDuration;
+                            currentChunk.duration = currentChunk.endTime - currentChunk.startTime;
                             chunks.push(currentChunk);
                         }
+
                         currentChunk = {
                             timeGroups: [],
                             startTime: timeGroup.time,
+                            endTime: 0,
+                            duration: 0,
                             tempo: midi.header.tempos[0]?.bpm || 120
                         };
                         noteCount = 0;
@@ -770,7 +825,12 @@
                     noteCount += timeGroup.notes.length;
                 });
 
+                // 最後のチャンクを処理
                 if (currentChunk) {
+                    const lastGroup = currentChunk.timeGroups[currentChunk.timeGroups.length - 1];
+                    const maxDuration = Math.max(...lastGroup.notes.map(n => n.duration || 0.5));
+                    currentChunk.endTime = lastGroup.time + maxDuration;
+                    currentChunk.duration = currentChunk.endTime - currentChunk.startTime;
                     chunks.push(currentChunk);
                 }
 
