@@ -313,119 +313,34 @@
 
             async initializeAudio() {
                 try {
-                    // 高品質オーディオコンテキストの設定
                     await Tone.start();
 
-                    // オーディオコンテキストの最適化
-                    if (Tone.context.state !== 'running') {
-                        await Tone.context.resume();
-                    }
+                    // マスターボリュームコントロールを追加
+                    // これは「総音量の調整器」として機能します
+                    this.masterVolume = new Tone.Volume(-12); // -12dB（約1/4の音量）
 
-                    // より大きなオーディオバッファを設定（ノイズ軽減）
-                    if (Tone.context.baseLatency !== undefined) {
-                        console.log(`オーディオ遅延: ${(Tone.context.baseLatency * 1000).toFixed(1)}ms`);
-                    }
-
-                    // 高品質リミッター/コンプレッサーチェーンの構築
-                    // これは「音の交通整理係」として機能します
-
-                    // 1. ソフトクリッピングリミッター（歪み防止の最後の砦）
-                    this.limiter = new Tone.Limiter(-1); // -1dBで制限
-
-                    // 2. マルチバンドコンプレッサー（周波数帯域別の音量制御）
-                    this.compressor = new Tone.MultibandCompressor({
-                        low: {
-                            threshold: -12,   // 低音域の圧縮開始レベル
-                            ratio: 6,         // 圧縮比
-                            attack: 0.003,    // 素早い反応
-                            release: 0.1      // 自然な解放
-                        },
-                        mid: {
-                            threshold: -18,   // 中音域（最も敏感な帯域）
-                            ratio: 4,
-                            attack: 0.002,
-                            release: 0.08
-                        },
-                        high: {
-                            threshold: -15,   // 高音域
-                            ratio: 8,         // より強い圧縮（シャープさを抑制）
-                            attack: 0.001,
-                            release: 0.05
-                        }
-                    });
-
-                    // 3. マスターボリューム（全体の音量調整）
-                    this.masterVolume = new Tone.Volume(-18); // さらに安全に -18dB
-
-                    // 4. 高品質シンセサイザーの設定
+                    // 基本的なシンセサイザーにボリューム制御を追加
                     this.synth = new Tone.PolySynth({
-                        maxPolyphony: 24, // 同時発音数を24に削減（より安定）
+                        maxPolyphony: 32, // 同時発音数を32に制限（重要な改善点）
                         voice: Tone.Synth,
                         options: {
-                            oscillator: {
-                                type: "triangle", // より滑らかな三角波
-                                partialCount: 4   // 倍音成分を制限してクリーンに
-                            },
                             envelope: {
-                                attack: 0.008,    // より自然な立ち上がり（8ms）
-                                decay: 0.12,      // 適度な減衰
-                                sustain: 0.6,     // 持続レベル
-                                release: 0.25     // 自然な余韻（250ms）
-                            },
-                            // フィルター追加（高周波ノイズ除去）
-                            filter: {
-                                type: "lowpass", // ローパスフィルター
-                                frequency: 3000, // 3kHz以上をカット
-                                rolloff: -12     // 緩やかなカット
-                            },
-                            filterEnvelope: {
-                                attack: 0.01,
-                                decay: 0.1,
-                                sustain: 0.8,
-                                release: 0.2,
-                                baseFrequency: 3000,
-                                octaves: 0.5
+                                attack: 0.005,  // 少し自然な立ち上がりに
+                                release: 0.3    // 少し自然な減衰に
                             }
                         }
-                    });
+                    }).connect(this.masterVolume).toDestination();
 
-                    // 完全なエフェクトチェーンの構築
-                    // シンセ → コンプレッサー → マスターボリューム → リミッター → 出力
-                    this.synth
-                        .connect(this.compressor)
-                        .connect(this.masterVolume)
-                        .connect(this.limiter)
-                        .toDestination();
-
-                    // 音質統計情報の表示
                     if (this.debugMode.checked) {
-                        console.log('🎵 超高品質オーディオシステム初期化完了');
-                        console.log(`- ポリフォニー: 24音`);
-                        console.log(`- マスター音量: -18dB`);
-                        console.log(`- リミッター: -1dB`);
-                        console.log(`- 波形: 三角波 (4倍音)`);
-                        console.log(`- フィルター: 3kHz ローパス`);
-                        console.log(`- サンプルレート: ${Tone.context.sampleRate}Hz`);
+                        console.log('安定化オーディオシステム初期化完了 - 32音ポリフォニー, -12dBマスター音量');
                     }
-
                     return true;
                 } catch (error) {
-                    console.error('高品質オーディオ初期化失敗:', error);
-                    // 緊急フォールバック：最もシンプルで安全な構成
-                    try {
-                        this.masterVolume = new Tone.Volume(-24);
-                        this.synth = new Tone.MonoSynth({
-                            envelope: {
-                                attack: 0.01,
-                                release: 0.3
-                            }
-                        }).connect(this.masterVolume).toDestination();
-                        console.log('フォールバック: 超安全モードで初期化');
-                        return true;
-                    } catch (fallbackError) {
-                        console.error('フォールバック初期化も失敗:', fallbackError);
-                        return false;
-                    }
+                    console.error('Audio init failed:', error);
+                    // フォールバック：最もシンプルな構成
+                    this.synth = new Tone.MonoSynth().toDestination();
+                    console.log('フォールバック：モノフォニックシンセサイザーで初期化');
+                    return true;
                 }
             }
 
@@ -804,120 +719,21 @@
                 }, 50); // 50msに変更（負荷軽減とタイミング精度のバランス）
             }
 
-            // 安全で高品質な音量計算：ノイズを根本から防ぐ
+            // 安全な音量計算：同時発音数を考慮した動的音量調整
             calculateSafeVelocity(originalVelocity) {
-                // 現在のシステム負荷を考慮した動的音量調整
-                const currentTime = Date.now();
+                // 現在のアクティブな音声数を推定
+                // （実際のTone.jsからは正確な数値を取得できないため、推定値を使用）
+                const estimatedActiveVoices = Math.min(32, this.playedNotes.length);
 
-                // アクティブな音声数の精密な推定
-                // 最近再生された音符（500ms以内）をカウント
-                const recentNotes = this.playedNotes.filter(note =>
-                    currentTime - (note.actualPlayTime * 1000) < 500
-                );
+                // 同時発音数に応じて音量を調整
+                // 多くの音が同時に鳴るほど、個々の音量を下げる
+                const voiceReductionFactor = Math.max(0.1, 1.0 / Math.sqrt(estimatedActiveVoices + 1));
 
-                const estimatedActiveVoices = Math.min(24, recentNotes.length);
+                // 元の音量に調整倍率を適用
+                const adjustedVelocity = originalVelocity * voiceReductionFactor;
 
-                // 周波数マスキング効果を考慮した音量調整
-                // 人間の聴覚は、似た周波数の音が複数あると個々の音を区別しづらくなる
-                const voiceReductionFactor = this.calculateFrequencyMasking(estimatedActiveVoices);
-
-                // 音楽的な表現を保ちつつ安全な範囲に制限
-                let adjustedVelocity = originalVelocity * voiceReductionFactor;
-
-                // 極端に小さな音量を避ける（ノイズフロアの問題）
-                adjustedVelocity = Math.max(0.02, adjustedVelocity);
-
-                // デジタル歪みを絶対に防ぐための上限設定
-                adjustedVelocity = Math.min(0.4, adjustedVelocity);
-
-                // 対数スケールでの最終調整（人間の聴覚特性に合わせる）
-                return this.applyPsychoacousticCurve(adjustedVelocity);
-            }
-
-            // 周波数マスキング効果の計算
-            calculateFrequencyMasking(activeVoices) {
-                if (activeVoices <= 1) return 1.0;
-
-                // 周波数マスキングの数学的モデル
-                // 多くの音が同時に鳴るほど、個々の音量を下げても音楽的表現は維持される
-                const maskingFactor = 1.0 / Math.pow(activeVoices, 0.4);
-
-                // 最小値を設定（完全に音量をゼロにはしない）
-                return Math.max(0.15, maskingFactor);
-            }
-
-            // 心理音響学的音量カーブの適用
-            applyPsychoacousticCurve(linearVolume) {
-                // 人間の聴覚は対数的に音量を感じるため、
-                // 線形の音量値を対数スケールに変換
-
-                // Equal Loudness Contour（等ラウドネス曲線）の簡易版
-                const psychoacousticVolume = Math.pow(linearVolume, 0.7);
-
-                return psychoacousticVolume;
-            }
-
-            // より自然で安全な音符持続時間の計算
-            calculateOptimalDuration(originalDuration, pitch, velocity) {
-                // 音程と音量に基づく自然な持続時間の計算
-                let optimalDuration = originalDuration || 0.5;
-
-                // 音程による持続時間調整
-                const noteNumber = this.getPitchNumber(pitch);
-                const middleC = 60;
-
-                // 物理的楽器の特性を模倣
-                // 低音：長く響く、高音：短く減衰する
-                const pitchFactor = Math.exp(-(noteNumber - middleC) * 0.008);
-                optimalDuration *= (0.7 + 0.6 * pitchFactor);
-
-                // 音量による持続時間調整
-                // 大きな音：長く響く、小さな音：短く減衰する
-                const velocityFactor = 0.5 + velocity * 0.8;
-                optimalDuration *= velocityFactor;
-
-                // 実用的な範囲に制限
-                optimalDuration = Math.max(0.08, Math.min(2.5, optimalDuration));
-
-                return optimalDuration;
-            }
-
-            // 音程名からMIDIノート番号を取得（エラー処理強化版）
-            getPitchNumber(pitchName) {
-                const noteMap = {
-                    'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
-                    'E': 4, 'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8,
-                    'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10, 'B': 11
-                };
-
-                try {
-                    const match = pitchName.match(/([A-G][b#]?)(-?\d+)/);
-                    if (!match) {
-                        console.warn(`不正な音程名: ${pitchName}, C4を使用`);
-                        return 60; // C4をデフォルト
-                    }
-
-                    const noteName = match[1];
-                    const octave = parseInt(match[2]);
-
-                    if (noteMap[noteName] === undefined) {
-                        console.warn(`未知の音名: ${noteName}, C4を使用`);
-                        return 60;
-                    }
-
-                    const noteNumber = (octave + 1) * 12 + noteMap[noteName];
-
-                    // MIDI規格の範囲チェック (0-127)
-                    if (noteNumber < 0 || noteNumber > 127) {
-                        console.warn(`MIDI範囲外: ${noteNumber}, C4を使用`);
-                        return 60;
-                    }
-
-                    return noteNumber;
-                } catch (error) {
-                    console.warn(`音程解析エラー: ${pitchName}`, error);
-                    return 60; // 安全なデフォルト
-                }
+                // 最終的な音量を安全な範囲に制限
+                return Math.max(0.05, Math.min(0.7, adjustedVelocity));
             }
 
             stopMidi() {
@@ -996,136 +812,6 @@
                 this.stopMidi();
                 this.updateProgress();
                 this.updateReceiverStatus('データクリア', 'info');
-            }
-
-            // 音符データの検証（不正データによるノイズを防止）
-            validateNoteData(note) {
-                if (!note || typeof note !== 'object') return false;
-
-                // 音程の検証
-                if (!note.pitch || typeof note.pitch !== 'string') return false;
-                if (!/^[A-G][b#]?-?\d+$/.test(note.pitch)) return false;
-
-                // 時間の検証
-                if (typeof note.time !== 'number' || note.time < 0) return false;
-
-                // 持続時間の検証
-                if (note.duration !== undefined) {
-                    if (typeof note.duration !== 'number' || note.duration <= 0 || note.duration > 10) {
-                        return false;
-                    }
-                }
-
-                // 音量の検証
-                if (note.velocity !== undefined) {
-                    if (typeof note.velocity !== 'number' || note.velocity < 0 || note.velocity > 1) {
-                        return false;
-                    }
-                }
-
-                return true;
-            }
-
-            // システム負荷監視（高負荷時のノイズ予防）
-            checkSystemLoad() {
-                const currentTime = performance.now();
-
-                // 最近の処理時間を記録
-                if (!this.performanceMetrics) {
-                    this.performanceMetrics = {
-                        lastCheckTime: currentTime,
-                        processingTimes: [],
-                        maxSamples: 10
-                    };
-                }
-
-                const timeDelta = currentTime - this.performanceMetrics.lastCheckTime;
-                this.performanceMetrics.processingTimes.push(timeDelta);
-
-                // サンプル数を制限
-                if (this.performanceMetrics.processingTimes.length > this.performanceMetrics.maxSamples) {
-                    this.performanceMetrics.processingTimes.shift();
-                }
-
-                this.performanceMetrics.lastCheckTime = currentTime;
-
-                // 平均処理時間が閾値を超えているかチェック
-                const avgProcessingTime = this.performanceMetrics.processingTimes.reduce((a, b) => a + b, 0) / this.performanceMetrics.processingTimes.length;
-
-                // 処理時間が60ms（理想的な16.7msの約3.5倍）を超えたら高負荷とみなす
-                return avgProcessingTime > 60;
-            }
-
-            // エラー回復機能付き音符再生
-            async playNoteWithErrorRecovery(pitch, duration, scheduledTime, velocity) {
-                const maxRetries = 2;
-                let attempt = 0;
-
-                while (attempt < maxRetries) {
-                    try {
-                        // Tone.jsでの安全な音符再生
-                        this.synth.triggerAttackRelease(
-                            pitch,
-                            duration,
-                            scheduledTime,
-                            velocity
-                        );
-
-                        // 成功したら即座にリターン
-                        return;
-
-                    } catch (error) {
-                        attempt++;
-
-                        if (this.debugMode.checked) {
-                            console.warn(`音符再生試行 ${attempt}/${maxRetries} 失敗:`, {
-                                pitch,
-                                duration,
-                                scheduledTime,
-                                velocity,
-                                error: error.message
-                            });
-                        }
-
-                        if (attempt >= maxRetries) {
-                            // 最終的に失敗した場合の緊急対応
-                            try {
-                                // より安全な設定でリトライ
-                                this.synth.triggerAttackRelease(
-                                    'C4', // 安全な音程
-                                    0.1,  // 短い持続時間
-                                    '+0.01', // 即座に再生
-                                    0.1   // 小さな音量
-                                );
-
-                                if (this.debugMode.checked) {
-                                    console.log('緊急フォールバック音符で代替再生');
-                                }
-                            } catch (fallbackError) {
-                                if (this.debugMode.checked) {
-                                    console.error('完全な音符再生失敗:', fallbackError);
-                                }
-                            }
-                        } else {
-                            // 短時間待機してリトライ
-                            await new Promise(resolve => setTimeout(resolve, 1));
-                        }
-                    }
-                }
-            }
-
-            // システム負荷レベルの取得
-            getSystemLoadLevel() {
-                if (!this.performanceMetrics || this.performanceMetrics.processingTimes.length === 0) {
-                    return 'unknown';
-                }
-
-                const avgTime = this.performanceMetrics.processingTimes.reduce((a, b) => a + b, 0) / this.performanceMetrics.processingTimes.length;
-
-                if (avgTime < 20) return 'low';
-                if (avgTime < 40) return 'medium';
-                if (avgTime < 60) return 'high';
-                return 'critical';
             }
 
             updateReceiverStatus(message, type) {
