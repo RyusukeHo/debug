@@ -262,10 +262,9 @@
                 this.playedChunks = new Set();
                 this.isPlaying = false;
                 this.synth = null;
-                this.playbackTimeout = null;
+                this.playbackInterval = null;
                 this.isPlayingChunk = false;
                 this.preparedChunks = new Map();
-                this.currentPlayTime = 0;
 
                 // 送信側
                 this.originalMidi = null;
@@ -466,40 +465,31 @@
                 this.playBtn.disabled = true;
                 this.stopPlayBtn.disabled = false;
                 this.updateReceiverStatus('再生中...', 'playing');
-                this.currentPlayTime = 0;
 
-                this.scheduleNextChunk();
+                this.startPlaybackLoop();
             }
 
-            async scheduleNextChunk() {
-                if (!this.isPlaying) return;
+            startPlaybackLoop() {
+                this.playbackInterval = setInterval(() => {
+                    if (!this.isPlaying || this.isPlayingChunk) return;
 
-                // 次に再生すべきチャンクを取得
-                const nextChunk = this.getNextChunkToPlay();
-                if (!nextChunk) {
-                    // すべて再生完了または待機中
-                    this.playbackTimeout = setTimeout(() => this.scheduleNextChunk(), 100);
-                    return;
-                }
+                    // 未再生チャンクを取得
+                    const unplayedChunks = this.receivedChunks.filter(chunk =>
+                        !this.playedChunks.has(chunk.index)
+                    );
 
-                await this.playChunk(nextChunk);
+                    if (unplayedChunks.length === 0) return;
+
+                    // 最小インデックスのチャンクを再生
+                    unplayedChunks.sort((a, b) => a.index - b.index);
+                    const nextChunk = unplayedChunks[0];
+
+                    this.playChunkSequentially(nextChunk);
+
+                }, 50); // 50ms間隔でチェック
             }
 
-            getNextChunkToPlay() {
-                // 現在時刻に最も近い未再生チャンクを取得
-                const unplayedChunks = this.receivedChunks.filter(chunk =>
-                    !this.playedChunks.has(chunk.index) &&
-                    chunk.startTime <= this.currentPlayTime + 0.1 // 少し先読み
-                );
-
-                if (unplayedChunks.length === 0) return null;
-
-                // 開始時刻が最も早いものを選択
-                unplayedChunks.sort((a, b) => a.startTime - b.startTime);
-                return unplayedChunks[0];
-            }
-
-            async playChunk(chunk) {
+            async playChunkSequentially(chunk) {
                 this.isPlayingChunk = true;
                 this.playedChunks.add(chunk.index);
 
@@ -513,41 +503,57 @@
                 this.updateReceivedProgress();
                 this.updateMidiInfo();
 
-                // 時間グループごとに再生
+                // デバッグログ
+                console.log('再生チャンク:', chunk.index, 'グループ数:', chunk.timeGroups.length);
+
+                await this.playTimeGroups(chunk.timeGroups);
+
+                // チャンクの再生時間を計算（最後の音符の終了時刻）
                 let maxEndTime = 0;
-                for (const timeGroup of chunk.timeGroups) {
-                    const delay = (timeGroup.time - this.currentPlayTime) * 1000;
+                chunk.timeGroups.forEach(group => {
+                    const groupEndTime = group.time + Math.max(...group.notes.map(n => n.duration || 0.5));
+                    maxEndTime = Math.max(maxEndTime, groupEndTime);
+                });
+
+                const firstTime = chunk.timeGroups.length > 0 ? chunk.timeGroups[0].time : 0;
+                const chunkDuration = Math.max(1000, (maxEndTime - firstTime) * 1000); // 最低1秒
+
+                console.log('チャンク再生時間:', chunkDuration, 'ms');
+
+                // チャンクの再生時間分待機
+                await new Promise(resolve => setTimeout(resolve, chunkDuration));
+
+                this.isPlayingChunk = false;
+            }
+
+            async playTimeGroups(timeGroups) {
+                if (timeGroups.length === 0) return;
+
+                const startTime = timeGroups[0].time;
+
+                timeGroups.forEach(timeGroup => {
+                    const delay = (timeGroup.time - startTime) * 1000;
 
                     setTimeout(() => {
                         if (this.isPlaying && this.synth) {
+                            console.log('再生:', timeGroup.notes.length, '音符 at', timeGroup.time);
+
                             // 同じ時刻の音符を同時に再生（和音対応）
                             timeGroup.notes.forEach(note => {
                                 try {
                                     this.synth.triggerAttackRelease(
                                         note.pitch,
-                                        note.duration,
+                                        note.duration || 0.5,
                                         undefined,
-                                        note.velocity
+                                        note.velocity || 0.8
                                     );
                                 } catch (error) {
-                                    console.error('音符再生エラー:', error);
+                                    console.error('音符再生エラー:', error, note);
                                 }
                             });
                         }
                     }, Math.max(0, delay));
-
-                    // 最大終了時刻を計算
-                    const groupEndTime = timeGroup.time + Math.max(...timeGroup.notes.map(n => n.duration || 0.5));
-                    maxEndTime = Math.max(maxEndTime, groupEndTime);
-                }
-
-                // チャンク再生完了まで待機
-                const waitTime = (maxEndTime - this.currentPlayTime) * 1000;
-                setTimeout(() => {
-                    this.currentPlayTime = maxEndTime;
-                    this.isPlayingChunk = false;
-                    this.scheduleNextChunk();
-                }, Math.max(0, waitTime));
+                });
             }
 
             stopMidi() {
@@ -555,11 +561,10 @@
                 this.isPlayingChunk = false;
                 this.playBtn.disabled = false;
                 this.stopPlayBtn.disabled = true;
-                this.currentPlayTime = 0;
 
-                if (this.playbackTimeout) {
-                    clearTimeout(this.playbackTimeout);
-                    this.playbackTimeout = null;
+                if (this.playbackInterval) {
+                    clearInterval(this.playbackInterval);
+                    this.playbackInterval = null;
                 }
 
                 if (this.synth) {
@@ -599,7 +604,6 @@
                 this.playedChunks.clear();
                 this.preparedChunks.clear();
                 this.isPlayingChunk = false;
-                this.currentPlayTime = 0;
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
                 this.updateReceivedProgress();
