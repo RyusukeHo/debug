@@ -1,16 +1,14 @@
 <!DOCTYPE html>
-<!-- saved from url=(0057)https://ryusukeho.github.io/debug/test.html?v=334gqwr1234 -->
-<html lang="ja" data-google-analytics-opt-out="">
+<html lang="ja">
 
 <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MIDI QRストリーミング - タイミング修正版</title>
-    <script src="./MIDI QRストリーミング - タイミング修正版_files/jsQR.js.ダウンロード"></script>
-    <script src="./MIDI QRストリーミング - タイミング修正版_files/qrious.min.js.ダウンロード"></script>
-    <script src="./MIDI QRストリーミング - タイミング修正版_files/Midi.js.ダウンロード"></script>
-    <script src="./MIDI QRストリーミング - タイミング修正版_files/Tone.js.ダウンロード"></script>
+    <title>MIDI QRストリーミング - 改良版</title>
+    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script src="https://unpkg.com/qrious@4.0.2/dist/qrious.min.js"></script>
+    <script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+    <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -120,12 +118,6 @@
             border: 1px solid #ffeaa7;
         }
 
-        .status.buffering {
-            background: #e2e3e5;
-            color: #383d41;
-            border: 1px solid #d6d8db;
-        }
-
         .flash-display {
             text-align: center;
             padding: 20px;
@@ -184,16 +176,6 @@
             font-size: 11px;
         }
 
-        .buffer-info {
-            background: #f0f8e8;
-            border: 1px solid #c6e5b3;
-            border-radius: 5px;
-            padding: 10px;
-            margin: 10px 0;
-            font-family: monospace;
-            font-size: 11px;
-        }
-
         @media (max-width: 768px) {
             .container {
                 grid-template-columns: 1fr;
@@ -208,28 +190,25 @@
         <div class="panel">
             <h2>🎵 MIDI受信・再生</h2>
 
-            <video id="video" autoplay=""></video>
+            <video id="video" autoplay></video>
             <canvas id="canvas" style="display: none;"></canvas>
 
             <div class="controls">
                 <button id="startBtn">カメラ開始</button>
-                <button id="stopBtn" disabled="">停止</button>
+                <button id="stopBtn" disabled>停止</button>
                 <button id="clearBtn">クリア</button>
-                <button id="playBtn" disabled="">再生</button>
-                <button id="stopPlayBtn" disabled="">停止</button>
+                <button id="playBtn" disabled>再生</button>
+                <button id="stopPlayBtn" disabled>停止</button>
             </div>
 
             <div class="controls">
-                <span class="label">バッファ時間:</span>
-                <input type="number" id="bufferDuration" value="3" min="1" max="10" step="1">
-                <span>秒</span>
                 <label>
-                    <input type="checkbox" id="autoPlay" checked="">
+                    <input type="checkbox" id="autoPlay" checked>
                     自動再生
                 </label>
                 <label>
                     <input type="checkbox" id="debugMode">
-                    デバッグ
+                    デバッグモード
                 </label>
             </div>
 
@@ -239,10 +218,6 @@
                 <div id="receivedProgress" class="progress-fill" style="background: #bee5eb; z-index: 1;"></div>
                 <div id="playProgress" class="progress-fill"
                     style="background: #007bff; z-index: 2; position: absolute; top: 0;"></div>
-            </div>
-
-            <div class="buffer-info" id="bufferInfo">
-                バッファ情報がここに表示されます...
             </div>
 
             <div class="timing-info" id="timingInfo">
@@ -259,7 +234,7 @@
             <h2>📤 MIDI送信</h2>
 
             <div class="controls">
-                <input type="file" id="midiFile" accept=".mid,.midi">
+                <input type="file" id="midiFile" accept=".mid,.midi" />
                 <button id="loadMidiBtn">MIDI読み込み</button>
             </div>
 
@@ -271,9 +246,9 @@
             </div>
 
             <div class="controls">
-                <button id="generateBtn" disabled="">QRコード生成</button>
-                <button id="flashBtn" disabled="">フラッシュ開始</button>
-                <button id="stopFlashBtn" disabled="">フラッシュ停止</button>
+                <button id="generateBtn" disabled>QRコード生成</button>
+                <button id="flashBtn" disabled>フラッシュ開始</button>
+                <button id="stopFlashBtn" disabled>フラッシュ停止</button>
             </div>
 
             <div id="senderStatus" class="status info">MIDIファイルを選択してください</div>
@@ -307,14 +282,10 @@
                 this.playedChunks = new Set();
                 this.isPlaying = false;
                 this.synth = null;
+                this.playbackInterval = null;
+                this.isPlayingChunk = false;
                 this.playbackStartTime = null;
                 this.currentPlaybackTime = 0;
-
-                // バッファリング関連
-                this.isBuffering = false;
-                this.bufferStartTime = null;
-                this.scheduledNotes = [];
-                this.playbackScheduler = null;
 
                 // 送信側
                 this.originalMidi = null;
@@ -335,11 +306,9 @@
                 this.stopPlayBtn = document.getElementById('stopPlayBtn');
                 this.autoPlay = document.getElementById('autoPlay');
                 this.debugMode = document.getElementById('debugMode');
-                this.bufferDuration = document.getElementById('bufferDuration');
                 this.receiverStatus = document.getElementById('receiverStatus');
                 this.midiInfo = document.getElementById('midiInfo');
                 this.timingInfo = document.getElementById('timingInfo');
-                this.bufferInfo = document.getElementById('bufferInfo');
                 this.receivedProgress = document.getElementById('receivedProgress');
                 this.playProgress = document.getElementById('playProgress');
 
@@ -473,7 +442,7 @@
 
                         this.updateMidiInfo();
                         this.updateReceivedProgress();
-                        this.updateBufferInfo();
+                        this.updateTimingInfo();
                         this.tryAutoPlay();
                     }
                 } catch (error) {
@@ -498,85 +467,41 @@
                 this.midiInfo.textContent = info;
             }
 
-            updateBufferInfo() {
-                if (this.receivedChunks.length === 0) {
-                    this.bufferInfo.textContent = 'バッファ情報がここに表示されます...';
-                    return;
+            updateTimingInfo() {
+                if (this.receivedChunks.length === 0) return;
+
+                let info = '=== タイミング分析 ===\n';
+
+                // チャンク間のギャップを分析
+                const sortedChunks = [...this.receivedChunks].sort((a, b) => a.index - b.index);
+
+                for (let i = 0; i < sortedChunks.length - 1; i++) {
+                    const current = sortedChunks[i];
+                    const next = sortedChunks[i + 1];
+                    const gap = next.startTime - current.endTime;
+
+                    info += `チャンク${current.index + 1} → ${next.index + 1}: `;
+                    info += `ギャップ ${gap.toFixed(3)}s\n`;
                 }
 
-                const bufferTime = parseFloat(this.bufferDuration.value);
-                const currentTime = this.isBuffering ?
-                    (Date.now() - this.bufferStartTime) / 1000 : 0;
-
-                let info = `=== バッファ状態 ===\n`;
-                info += `設定バッファ時間: ${bufferTime}秒\n`;
-
-                if (this.isBuffering) {
-                    info += `現在のバッファ時間: ${currentTime.toFixed(1)}秒\n`;
-                    info += `バッファ進捗: ${Math.min(100, (currentTime / bufferTime) * 100).toFixed(1)}%\n`;
-                } else if (this.isPlaying) {
-                    info += `再生中: ${this.currentPlaybackTime.toFixed(2)}秒\n`;
-                    info += `スケジュール済み音符: ${this.scheduledNotes.length}\n`;
-                } else {
-                    info += `待機中\n`;
+                if (this.isPlaying) {
+                    const elapsed = (Date.now() - this.playbackStartTime) / 1000;
+                    info += `\n再生経過時間: ${elapsed.toFixed(2)}s\n`;
+                    info += `現在の楽曲時間: ${this.currentPlaybackTime.toFixed(2)}s\n`;
                 }
 
-                // バッファ内のチャンク情報
-                const bufferableChunks = this.receivedChunks.filter(chunk =>
-                    chunk.startTime <= bufferTime
-                );
-                info += `バッファ対象チャンク: ${bufferableChunks.length}\n`;
-
-                this.bufferInfo.textContent = info;
+                this.timingInfo.textContent = info;
             }
 
             async tryAutoPlay() {
-                if (!this.autoPlay.checked || this.isPlaying || this.isBuffering) {
-                    return;
-                }
-
-                const bufferTime = parseFloat(this.bufferDuration.value);
-
-                // バッファ時間内に十分なデータがあるかチェック
-                const bufferableChunks = this.receivedChunks.filter(chunk =>
-                    chunk.startTime < bufferTime
-                );
-
-                if (bufferableChunks.length > 0) {
-                    await this.startBuffering();
-                } else {
+                if (this.autoPlay.checked && !this.isPlaying && this.receivedChunks.length > 0) {
+                    await this.playMidi();
+                } else if (!this.isPlaying) {
                     this.playBtn.disabled = false;
                 }
             }
 
-            // バッファリング機能
-            async startBuffering() {
-                if (this.isBuffering || this.isPlaying) return;
-
-                this.isBuffering = true;
-                this.bufferStartTime = Date.now();
-                const bufferTime = parseFloat(this.bufferDuration.value);
-
-                this.updateReceiverStatus(`バッファリング中... (${bufferTime}秒)`, 'buffering');
-
-                // バッファリングタイマー
-                const bufferTimer = setInterval(() => {
-                    const elapsed = (Date.now() - this.bufferStartTime) / 1000;
-                    this.updateBufferInfo();
-
-                    if (elapsed >= bufferTime) {
-                        clearInterval(bufferTimer);
-                        this.completeBuffering();
-                    }
-                }, 100);
-            }
-
-            async completeBuffering() {
-                this.isBuffering = false;
-                await this.playMidi();
-            }
-
-            // 改良された再生システム
+            // 改良された再生関連メソッド
             async playMidi() {
                 if (this.receivedChunks.length === 0) return;
 
@@ -593,129 +518,84 @@
                 this.stopPlayBtn.disabled = false;
                 this.playbackStartTime = Date.now();
                 this.currentPlaybackTime = 0;
-                this.scheduledNotes = [];
-
-                // 全チャンクから音符をスケジュール
-                this.scheduleAllNotes();
-
                 this.updateReceiverStatus('再生中...', 'playing');
-                this.startPlaybackTimer();
+
+                this.startContinuousPlayback();
             }
 
-            scheduleAllNotes() {
-                this.scheduledNotes = [];
-
-                // 受信済みのすべてのチャンクから音符を抽出
-                this.receivedChunks.forEach(chunk => {
-                    chunk.timeGroups.forEach(timeGroup => {
-                        timeGroup.notes.forEach(note => {
-                            this.scheduledNotes.push({
-                                time: timeGroup.time,
-                                pitch: note.pitch,
-                                duration: note.duration,
-                                velocity: note.velocity,
-                                chunkIndex: chunk.index,
-                                played: false
-                            });
-                        });
-                    });
-                });
-
-                // 時間順にソート
-                this.scheduledNotes.sort((a, b) => a.time - b.time);
-
-                if (this.debugMode.checked) {
-                    console.log(`${this.scheduledNotes.length} 音符をスケジュール`);
-                }
-            }
-
-            startPlaybackTimer() {
-                this.playbackScheduler = setInterval(() => {
+            startContinuousPlayback() {
+                // 連続再生のためのタイマー
+                this.playbackInterval = setInterval(() => {
                     if (!this.isPlaying) return;
 
                     this.currentPlaybackTime = (Date.now() - this.playbackStartTime) / 1000;
 
-                    // 現在時刻で再生すべき音符を探す
-                    const tolerance = 0.05; // 50msの許容範囲
-                    const playableNotes = this.scheduledNotes.filter(note =>
-                        !note.played &&
-                        note.time <= this.currentPlaybackTime + tolerance &&
-                        note.time >= this.currentPlaybackTime - tolerance
-                    );
-
-                    // 音符を再生
-                    playableNotes.forEach(note => {
-                        try {
-                            this.synth.triggerAttackRelease(
-                                note.pitch,
-                                note.duration || 0.5,
-                                undefined,
-                                note.velocity || 0.8
-                            );
-                            note.played = true;
-
-                            if (this.debugMode.checked && playableNotes.length > 0) {
-                                console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${playableNotes.length}音符再生`);
-                            }
-                        } catch (error) {
-                            console.error('音符再生エラー:', error, note);
-                        }
+                    // 現在時刻で再生すべきチャンクを探す（重複時も考慮）
+                    const playableChunks = this.receivedChunks.filter(chunk => {
+                        // まだ再生開始されていない && 開始時刻に達している
+                        return !this.playedChunks.has(chunk.index) &&
+                            this.currentPlaybackTime >= chunk.startTime - 0.1; // 0.1秒の余裕
                     });
 
-                    // チャンクの再生状況を更新
-                    this.updatePlayedChunks();
+                    // 開始時刻順でソート
+                    playableChunks.sort((a, b) => a.startTime - b.startTime);
+
+                    // 再生開始
+                    playableChunks.forEach(chunk => {
+                        this.playChunkAtCorrectTime(chunk);
+                        this.playedChunks.add(chunk.index);
+                    });
+
                     this.updateProgress();
-                    this.updateBufferInfo();
+                    this.updateTimingInfo();
 
-                    // 新しく受信したチャンクがあれば追加スケジュール
-                    this.addNewlyReceivedNotes();
-
-                }, 20); // 20ms間隔で高精度チェック
+                }, 50); // 50ms間隔でチェック
             }
 
-            addNewlyReceivedNotes() {
-                // 新しく受信したチャンクの音符をスケジュールに追加
-                const scheduledChunks = new Set(this.scheduledNotes.map(n => n.chunkIndex));
+            playChunkAtCorrectTime(chunk) {
+                const chunkStartTime = chunk.startTime;
+                const currentTime = this.currentPlaybackTime;
 
-                this.receivedChunks.forEach(chunk => {
-                    if (!scheduledChunks.has(chunk.index)) {
-                        chunk.timeGroups.forEach(timeGroup => {
+                if (this.debugMode.checked) {
+                    console.log(`チャンク${chunk.index + 1} 開始:`, {
+                        chunkStart: chunkStartTime.toFixed(3),
+                        currentTime: currentTime.toFixed(3),
+                        delay: (currentTime - chunkStartTime).toFixed(3)
+                    });
+                }
+
+                const totalNotes = chunk.timeGroups.reduce((sum, group) => sum + group.notes.length, 0);
+                this.updateReceiverStatus(
+                    `チャンク ${chunk.index + 1} 再生中 (${totalNotes}音符, ${chunk.duration.toFixed(2)}秒)`,
+                    'playing'
+                );
+
+                // 時間グループを正確なタイミングで再生
+                chunk.timeGroups.forEach(timeGroup => {
+                    const noteTime = timeGroup.time;
+                    const playTime = noteTime - currentTime; // 現在からの相対時間
+                    const delay = Math.max(0, playTime * 1000); // ミリ秒、負の値は0に
+
+                    setTimeout(() => {
+                        if (this.isPlaying && this.synth) {
+                            if (this.debugMode.checked) {
+                                console.log(`音符再生: ${timeGroup.notes.length}音符 at ${noteTime.toFixed(3)}s`);
+                            }
+
                             timeGroup.notes.forEach(note => {
-                                // まだ再生時刻を過ぎていない音符のみ追加
-                                if (timeGroup.time > this.currentPlaybackTime) {
-                                    this.scheduledNotes.push({
-                                        time: timeGroup.time,
-                                        pitch: note.pitch,
-                                        duration: note.duration,
-                                        velocity: note.velocity,
-                                        chunkIndex: chunk.index,
-                                        played: false
-                                    });
+                                try {
+                                    this.synth.triggerAttackRelease(
+                                        note.pitch,
+                                        note.duration || 0.5,
+                                        undefined,
+                                        note.velocity || 0.8
+                                    );
+                                } catch (error) {
+                                    console.error('音符再生エラー:', error, note);
                                 }
                             });
-                        });
-                        scheduledChunks.add(chunk.index);
-
-                        if (this.debugMode.checked) {
-                            console.log(`チャンク ${chunk.index + 1} の音符を追加スケジュール`);
                         }
-                    }
-                });
-
-                // 再ソート
-                this.scheduledNotes.sort((a, b) => a.time - b.time);
-            }
-
-            updatePlayedChunks() {
-                this.receivedChunks.forEach(chunk => {
-                    // チャンクの終了時刻を過ぎたらプレイ済みとマーク
-                    if (this.currentPlaybackTime >= chunk.endTime && !this.playedChunks.has(chunk.index)) {
-                        this.playedChunks.add(chunk.index);
-
-                        if (this.debugMode.checked) {
-                            console.log(`チャンク ${chunk.index + 1} 再生完了`);
-                        }
-                    }
+                    }, delay);
                 });
 
                 this.updateMidiInfo();
@@ -723,23 +603,22 @@
 
             stopMidi() {
                 this.isPlaying = false;
-                this.isBuffering = false;
+                this.isPlayingChunk = false;
                 this.playBtn.disabled = false;
                 this.stopPlayBtn.disabled = true;
 
-                if (this.playbackScheduler) {
-                    clearInterval(this.playbackScheduler);
-                    this.playbackScheduler = null;
+                if (this.playbackInterval) {
+                    clearInterval(this.playbackInterval);
+                    this.playbackInterval = null;
                 }
 
                 if (this.synth) {
                     this.synth.releaseAll();
                 }
 
-                this.scheduledNotes = [];
                 this.updateReceiverStatus('停止', 'info');
                 this.updateProgress(0);
-                this.updateBufferInfo();
+                this.updateTimingInfo();
             }
 
             updateProgress(value = null) {
@@ -769,10 +648,10 @@
             clearData() {
                 this.receivedChunks = [];
                 this.playedChunks.clear();
-                this.scheduledNotes = [];
+                this.isPlayingChunk = false;
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
-                this.bufferInfo.textContent = 'バッファ情報がここに表示されます...';
+                this.timingInfo.textContent = 'タイミング情報がここに表示されます...';
                 this.updateReceivedProgress();
                 this.updateReceiverStatus('データクリア', 'info');
             }
@@ -782,7 +661,7 @@
                 this.receiverStatus.className = `status ${type}`;
             }
 
-            // 送信側メソッド（変更なし）
+            // 送信側メソッド（改良版）
             async loadMidiFile() {
                 const file = this.midiFile.files[0];
                 if (!file) {
@@ -885,16 +764,15 @@
 
                 allNotes.sort((a, b) => a.time - b.time);
 
-                // 同時刻音符のグループ化（精度向上）
+                // 同時刻音符のグループ化
                 const timeGroups = [];
                 let currentTime = null;
                 let currentGroup = null;
-                const timeThreshold = 0.01; // 10msの同時刻判定
 
                 allNotes.forEach(note => {
                     const roundedTime = Math.round(note.time * 1000) / 1000;
 
-                    if (currentTime === null || Math.abs(roundedTime - currentTime) > timeThreshold) {
+                    if (currentTime !== roundedTime) {
                         if (currentGroup) {
                             timeGroups.push(currentGroup);
                         }
@@ -938,7 +816,7 @@
                             startTime: timeGroup.time,
                             endTime: 0,
                             duration: 0,
-                            tempo: midi.header.tempos.length > 0 ? midi.header.tempos[0].bpm : 120
+                            tempo: midi.header.tempos[0]?.bpm || 120
                         };
                         noteCount = 0;
                     }
@@ -1041,8 +919,6 @@
             new MIDIQRStreaming();
         });
     </script>
-
-
 </body>
 
 </html>
