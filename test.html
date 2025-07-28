@@ -151,6 +151,15 @@
             margin-right: 10px;
         }
 
+        label {
+            margin-right: 15px;
+            cursor: pointer;
+        }
+
+        label input[type="radio"] {
+            margin-right: 5px;
+        }
+
         @media (max-width: 768px) {
             .container {
                 grid-template-columns: 1fr;
@@ -179,6 +188,18 @@
                 <input type="text" id="startFlag" value="START:" placeholder="例: START:">
                 <span class="label">FPS:</span>
                 <span class="fps-display" id="fpsDisplay">0 FPS</span>
+            </div>
+
+            <div class="controls">
+                <span class="label">シーケンス番号欠落時:</span>
+                <label>
+                    <input type="radio" name="sequenceMode" id="waitMode" checked>
+                    次の周期を待つ
+                </label>
+                <label>
+                    <input type="radio" name="sequenceMode" id="continueMode">
+                    そのまま続行
+                </label>
             </div>
 
             <div id="readerStatus" class="status info">カメラを開始してください</div>
@@ -236,6 +257,8 @@
                 this.lastFPSTime = 0;
                 this.frameCount = 0;
                 this.lastProcessedSequence = -1; // 最後に処理したシーケンス番号
+                this.expectedSequence = 0; // 期待する次のシーケンス番号
+                this.waitingForNextCycle = false; // 次の周期を待っている状態
 
                 this.qrChunks = [];
                 this.flashInterval = null;
@@ -253,6 +276,8 @@
                 this.fpsDisplay = document.getElementById('fpsDisplay');
                 this.readerStatus = document.getElementById('readerStatus');
                 this.receivedDataDisplay = document.getElementById('receivedData');
+                this.waitMode = document.getElementById('waitMode');
+                this.continueMode = document.getElementById('continueMode');
 
                 this.dataInput = document.getElementById('dataInput');
                 this.chunkSize = document.getElementById('chunkSize');
@@ -369,16 +394,49 @@
                 if (isStartFlag) {
                     // 開始フラグが見つかった場合、データをリセットして受信を開始
                     this.isReceiving = true;
+                    this.waitingForNextCycle = false;
                     this.receivedData = '';
                     this.lastProcessedSequence = sequenceNumber;
+                    this.expectedSequence = sequenceNumber + 1;
                     this.updateReaderStatus(`新しいデータ受信を開始しました（SEQ:${sequenceNumber}）`, 'success');
                     this.receivedData += actualData;
                     this.updateReceivedData();
+                } else if (this.waitingForNextCycle) {
+                    // 次の周期を待っている場合は開始フラグ以外は無視
+                    return;
                 } else if (this.isReceiving) {
-                    // 受信中の場合、シーケンス番号をチェックして追加
-                    this.lastProcessedSequence = sequenceNumber;
-                    this.receivedData += actualData;
-                    this.updateReceivedData();
+                    // 受信中の場合、シーケンス番号をチェック
+                    if (sequenceNumber === this.expectedSequence) {
+                        // 期待通りのシーケンス番号
+                        this.lastProcessedSequence = sequenceNumber;
+                        this.expectedSequence = sequenceNumber + 1;
+                        this.receivedData += actualData;
+                        this.updateReceivedData();
+                    } else if (sequenceNumber > this.expectedSequence) {
+                        // シーケンス番号が飛んだ場合
+                        const isWaitMode = this.waitMode.checked;
+
+                        if (isWaitMode) {
+                            // 次の周期を待つモード
+                            this.waitingForNextCycle = true;
+                            this.isReceiving = false;
+                            this.updateReaderStatus(
+                                `シーケンス番号が飛びました（期待:${this.expectedSequence}, 受信:${sequenceNumber}）次の周期を待機中...`,
+                                'error'
+                            );
+                        } else {
+                            // そのまま続行モード
+                            this.lastProcessedSequence = sequenceNumber;
+                            this.expectedSequence = sequenceNumber + 1;
+                            this.receivedData += actualData;
+                            this.updateReceivedData();
+                            this.updateReaderStatus(
+                                `シーケンス番号が飛びましたが続行しました（期待:${this.expectedSequence - 1}, 受信:${sequenceNumber}）`,
+                                'info'
+                            );
+                        }
+                    }
+                    // sequenceNumber < expectedSequence の場合は古いデータなので無視
                 }
             }
 
@@ -397,6 +455,8 @@
                 this.receivedData = '';
                 this.isReceiving = false;
                 this.lastProcessedSequence = -1; // シーケンス番号もリセット
+                this.expectedSequence = 0; // 期待シーケンス番号もリセット
+                this.waitingForNextCycle = false; // 待機状態もリセット
                 this.updateReceivedData();
                 this.updateReaderStatus('データをクリアしました', 'info');
             }
