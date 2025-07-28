@@ -111,6 +111,12 @@
             border: 1px solid #bee5eb;
         }
 
+        .status.complete {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #28a745;
+        }
+
         .fps-display {
             font-family: monospace;
             background: #333;
@@ -186,6 +192,11 @@
             <div class="controls">
                 <span class="label">開始フラグ:</span>
                 <input type="text" id="startFlag" value="START:" placeholder="例: START:">
+                <span class="label">終了フラグ:</span>
+                <input type="text" id="endFlag" value="END:" placeholder="例: END:">
+            </div>
+
+            <div class="controls">
                 <span class="label">FPS:</span>
                 <span class="fps-display" id="fpsDisplay">0 FPS</span>
             </div>
@@ -224,6 +235,11 @@
             <div class="controls">
                 <span class="label">開始フラグ:</span>
                 <input type="text" id="senderStartFlag" value="START:" placeholder="例: START:">
+                <span class="label">終了フラグ:</span>
+                <input type="text" id="senderEndFlag" value="END:" placeholder="例: END:">
+            </div>
+
+            <div class="controls">
                 <button id="generateBtn">QRコード生成</button>
                 <button id="flashBtn" disabled>フラッシュ開始</button>
                 <button id="stopFlashBtn" disabled>フラッシュ停止</button>
@@ -254,15 +270,17 @@
                 this.isScanning = false;
                 this.receivedData = '';
                 this.isReceiving = false;
+                this.isCompleted = false;
                 this.lastFPSTime = 0;
                 this.frameCount = 0;
-                this.lastProcessedSequence = -1; // 最後に処理したシーケンス番号
-                this.expectedSequence = 0; // 期待する次のシーケンス番号
-                this.waitingForNextCycle = false; // 次の周期を待っている状態
+                this.lastProcessedSequence = -1;
+                this.expectedSequence = 0;
+                this.waitingForNextCycle = false;
 
                 this.qrChunks = [];
                 this.flashInterval = null;
                 this.currentChunkIndex = 0;
+                this.flashCompleted = false;
 
                 this.initializeElements();
                 this.setupEventListeners();
@@ -273,6 +291,7 @@
                 this.stopBtn = document.getElementById('stopBtn');
                 this.clearDataBtn = document.getElementById('clearDataBtn');
                 this.startFlag = document.getElementById('startFlag');
+                this.endFlag = document.getElementById('endFlag');
                 this.fpsDisplay = document.getElementById('fpsDisplay');
                 this.readerStatus = document.getElementById('readerStatus');
                 this.receivedDataDisplay = document.getElementById('receivedData');
@@ -283,6 +302,7 @@
                 this.chunkSize = document.getElementById('chunkSize');
                 this.flashFPS = document.getElementById('flashFPS');
                 this.senderStartFlag = document.getElementById('senderStartFlag');
+                this.senderEndFlag = document.getElementById('senderEndFlag');
                 this.generateBtn = document.getElementById('generateBtn');
                 this.flashBtn = document.getElementById('flashBtn');
                 this.stopFlashBtn = document.getElementById('stopFlashBtn');
@@ -354,9 +374,25 @@
             }
 
             processQRCode(data) {
-                const startFlag = this.startFlag.value;
+                // 既に受信完了している場合は何もしない
+                if (this.isCompleted) {
+                    return;
+                }
 
-                // シーケンス番号を抽出（形式: "SEQ:001:データ" または "START:SEQ:001:データ"）
+                const startFlag = this.startFlag.value;
+                const endFlag = this.endFlag.value;
+
+                // ENDフラグの検出
+                if (data.startsWith(endFlag)) {
+                    if (this.isReceiving) {
+                        this.isReceiving = false;
+                        this.isCompleted = true;
+                        this.updateReaderStatus('データ受信が完了しました！', 'complete');
+                        return;
+                    }
+                }
+
+                // シーケンス番号を抽出
                 let sequenceMatch;
                 let actualData;
                 let isStartFlag = false;
@@ -394,6 +430,7 @@
                 if (isStartFlag) {
                     // 開始フラグが見つかった場合、データをリセットして受信を開始
                     this.isReceiving = true;
+                    this.isCompleted = false;
                     this.waitingForNextCycle = false;
                     this.receivedData = '';
                     this.lastProcessedSequence = sequenceNumber;
@@ -454,9 +491,10 @@
             clearData() {
                 this.receivedData = '';
                 this.isReceiving = false;
-                this.lastProcessedSequence = -1; // シーケンス番号もリセット
-                this.expectedSequence = 0; // 期待シーケンス番号もリセット
-                this.waitingForNextCycle = false; // 待機状態もリセット
+                this.isCompleted = false;
+                this.lastProcessedSequence = -1;
+                this.expectedSequence = 0;
+                this.waitingForNextCycle = false;
                 this.updateReceivedData();
                 this.updateReaderStatus('データをクリアしました', 'info');
             }
@@ -479,6 +517,7 @@
 
                 const chunkSize = parseInt(this.chunkSize.value);
                 const startFlag = this.senderStartFlag.value;
+                const endFlag = this.senderEndFlag.value;
 
                 this.qrChunks = [];
                 let sequenceNumber = 0;
@@ -510,9 +549,13 @@
                     sequenceNumber++;
                 }
 
+                // 最後にENDフラグを追加
+                this.qrChunks.push(endFlag);
+
                 this.currentChunkIndex = 0;
+                this.flashCompleted = false;
                 this.flashBtn.disabled = false;
-                this.updateSenderStatus(`${this.qrChunks.length} 個のQRコード（シーケンス番号付き）を生成しました`, 'success');
+                this.updateSenderStatus(`${this.qrChunks.length - 1} 個のデータQRコード + ENDフラグを生成しました`, 'success');
                 this.updateProgress();
 
                 // 最初のQRコードを表示
@@ -540,13 +583,24 @@
                     return;
                 }
 
+                this.currentChunkIndex = 0;
+                this.flashCompleted = false;
                 const fps = parseInt(this.flashFPS.value);
                 const interval = 1000 / fps;
 
                 this.flashInterval = setInterval(() => {
                     this.displayQRCode(this.qrChunks[this.currentChunkIndex]);
-                    this.currentChunkIndex = (this.currentChunkIndex + 1) % this.qrChunks.length;
                     this.updateProgress();
+
+                    this.currentChunkIndex++;
+
+                    // 全てのQRコードを送信完了した場合
+                    if (this.currentChunkIndex >= this.qrChunks.length) {
+                        this.stopFlashing();
+                        this.flashCompleted = true;
+                        this.updateSenderStatus('送信完了！ENDフラグを送信しました', 'complete');
+                        return;
+                    }
                 }, interval);
 
                 this.flashBtn.disabled = true;
@@ -561,7 +615,10 @@
                 }
                 this.flashBtn.disabled = false;
                 this.stopFlashBtn.disabled = true;
-                this.updateSenderStatus('フラッシュ送信を停止しました', 'info');
+
+                if (!this.flashCompleted) {
+                    this.updateSenderStatus('フラッシュ送信を停止しました', 'info');
+                }
             }
 
             updateSenderStatus(message, type) {
@@ -570,7 +627,8 @@
             }
 
             updateProgress() {
-                this.progressDisplay.textContent = `${this.currentChunkIndex + 1} / ${this.qrChunks.length}`;
+                const current = Math.min(this.currentChunkIndex + 1, this.qrChunks.length);
+                this.progressDisplay.textContent = `${current} / ${this.qrChunks.length}`;
             }
         }
 
