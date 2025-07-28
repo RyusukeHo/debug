@@ -154,13 +154,14 @@
             border-radius: 10px;
             overflow: hidden;
             margin: 10px 0;
+            position: relative;
         }
 
         .progress-fill {
             height: 100%;
-            background: #28a745;
             width: 0%;
             transition: width 0.3s;
+            border-radius: 10px;
         }
 
         @media (max-width: 768px) {
@@ -198,7 +199,9 @@
             <div id="receiverStatus" class="status info">カメラを開始してください</div>
 
             <div class="progress-bar">
-                <div id="playProgress" class="progress-fill"></div>
+                <div id="receivedProgress" class="progress-fill" style="background: #bee5eb; z-index: 1;"></div>
+                <div id="playProgress" class="progress-fill"
+                    style="background: #007bff; z-index: 2; position: absolute; top: 0;"></div>
             </div>
 
             <div class="midi-info" id="midiInfo">
@@ -282,6 +285,7 @@
                 this.autoPlay = document.getElementById('autoPlay');
                 this.receiverStatus = document.getElementById('receiverStatus');
                 this.midiInfo = document.getElementById('midiInfo');
+                this.receivedProgress = document.getElementById('receivedProgress');
                 this.playProgress = document.getElementById('playProgress');
 
                 // 送信側
@@ -411,6 +415,7 @@
                         );
 
                         this.updateMidiInfo();
+                        this.updateReceivedProgress(); // 受信プログレスを更新
                         this.tryAutoPlay();
                     }
                 } catch (error) {
@@ -490,6 +495,7 @@
                 );
 
                 this.updateProgress();
+                this.updateReceivedProgress(); // 受信プログレスも更新
                 this.updateMidiInfo();
 
                 // チャンク内の音符を再生
@@ -558,12 +564,25 @@
                 this.playProgress.style.width = `${percent}%`;
             }
 
+            updateReceivedProgress() {
+                if (this.receivedChunks.length === 0) {
+                    this.receivedProgress.style.width = '0%';
+                    return;
+                }
+
+                const total = this.receivedChunks[0].total;
+                const received = this.receivedChunks.length;
+                const percent = total > 0 ? (received / total) * 100 : 0;
+                this.receivedProgress.style.width = `${percent}%`;
+            }
+
             clearData() {
                 this.receivedChunks = [];
                 this.playedChunks.clear();
                 this.isPlayingChunk = false;
                 this.stopMidi();
                 this.midiInfo.textContent = 'MIDIデータの受信を待っています...';
+                this.updateReceivedProgress(); // 受信プログレスもクリア
                 this.updateReceiverStatus('データクリア', 'info');
             }
 
