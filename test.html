@@ -268,7 +268,7 @@
 
                 this.initializeElements();
                 this.setupEventListeners();
-                this.initializeAudio();
+                // オーディオ初期化は遅延実行（ユーザーインタラクション後）
             }
 
             initializeElements() {
@@ -312,8 +312,14 @@
             }
 
             async initializeAudio() {
-                await Tone.start();
-                this.synth = new Tone.PolySynth().toDestination();
+                try {
+                    await Tone.start();
+                    this.synth = new Tone.PolySynth(Tone.Synth).toDestination();
+                    console.log('Audio initialized successfully');
+                } catch (error) {
+                    console.error('Audio initialization failed:', error);
+                    this.updateReceiverStatus('オーディオ初期化エラー: ' + error.message, 'error');
+                }
             }
 
             async startCamera() {
@@ -396,11 +402,14 @@
             updateMidiInfo() {
                 if (this.receivedChunks.length === 0) return;
 
-                const info = `受信チャンク: ${this.receivedChunks.length} 個\n`;
+                const totalChunks = this.receivedChunks[0].total || this.receivedChunks.length;
+                const info = `受信チャンク: ${this.receivedChunks.length} / ${totalChunks}\n`;
                 let details = '';
 
                 this.receivedChunks.forEach(chunk => {
-                    details += `チャンク ${chunk.index}: ${chunk.notes.length} 音符\n`;
+                    const timeInfo = chunk.startTime !== undefined ?
+                        ` (${chunk.startTime.toFixed(1)}s-${chunk.endTime.toFixed(1)}s)` : '';
+                    details += `チャンク ${chunk.index + 1}${timeInfo}: ${chunk.notes.length} 音符\n`;
                 });
 
                 this.midiInfo.textContent = info + details;
@@ -422,6 +431,20 @@
 
             async playMidi() {
                 if (this.receivedChunks.length === 0) return;
+
+                // オーディオが初期化されていない場合は初期化
+                if (!this.synth) {
+                    await this.initializeAudio();
+                    if (!this.synth) {
+                        this.updateReceiverStatus('オーディオの初期化に失敗しました', 'error');
+                        return;
+                    }
+                }
+
+                // ユーザーインタラクションによるTone.js開始
+                if (Tone.context.state !== 'running') {
+                    await Tone.start();
+                }
 
                 this.isPlaying = true;
                 this.playBtn.disabled = true;
@@ -449,11 +472,19 @@
                     const notePromises = chunk.notes.map(note => {
                         return new Promise(resolve => {
                             setTimeout(() => {
-                                if (this.isPlaying) {
-                                    this.synth.triggerAttackRelease(
-                                        note.pitch,
-                                        note.duration
-                                    );
+                                if (this.isPlaying && this.synth) {
+                                    try {
+                                        // 音量を設定（velocityを反映）
+                                        const velocity = note.velocity || 0.8;
+                                        this.synth.triggerAttackRelease(
+                                            note.pitch,
+                                            note.duration,
+                                            undefined, // 現在時刻から
+                                            velocity
+                                        );
+                                    } catch (error) {
+                                        console.error('音符再生エラー:', error, note);
+                                    }
                                 }
                                 resolve();
                             }, note.time * 1000);
@@ -505,7 +536,11 @@
                 this.isPlaying = false;
                 this.playBtn.disabled = false;
                 this.stopPlayBtn.disabled = true;
-                this.synth.releaseAll();
+
+                if (this.synth) {
+                    this.synth.releaseAll();
+                }
+
                 this.updateProgress(0, 1);
             }
 
@@ -573,7 +608,10 @@
                         index: index,
                         total: chunks.length,
                         duration: chunkDuration,
-                        notes: chunk
+                        startTime: chunk.startTime,
+                        endTime: chunk.endTime,
+                        tempo: chunk.tempo,
+                        notes: chunk.notes
                     };
 
                     const qrData = 'MIDI:' + JSON.stringify(chunkData);
@@ -597,21 +635,29 @@
                     const endTime = currentTime + chunkDuration;
                     const chunkNotes = [];
 
-                    midi.tracks.forEach(track => {
+                    midi.tracks.forEach((track, trackIndex) => {
                         track.notes.forEach(note => {
                             if (note.time >= currentTime && note.time < endTime) {
                                 chunkNotes.push({
                                     pitch: note.name,
-                                    time: note.time - currentTime,
+                                    time: note.time - currentTime, // チャンク内相対時間
+                                    absoluteTime: note.time, // 楽曲全体での絶対時間
                                     duration: note.duration,
-                                    velocity: note.velocity
+                                    velocity: note.velocity,
+                                    track: trackIndex,
+                                    instrument: track.instrument ? track.instrument.name : 'acoustic_grand_piano'
                                 });
                             }
                         });
                     });
 
                     if (chunkNotes.length > 0) {
-                        chunks.push(chunkNotes);
+                        chunks.push({
+                            notes: chunkNotes,
+                            startTime: currentTime, // このチャンクの開始時間
+                            endTime: endTime,
+                            tempo: midi.header.tempos.length > 0 ? midi.header.tempos[0].bpm : 120
+                        });
                     }
 
                     currentTime = endTime;
