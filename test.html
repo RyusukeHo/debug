@@ -320,30 +320,63 @@
                 try {
                     await Tone.start();
 
-                    // マスターボリュームコントロールを追加
-                    // これは「総音量の調整器」として機能します
-                    this.masterVolume = new Tone.Volume(-12); // -12dB（約1/4の音量）
+                    // リミッターを追加してクリッピングを防止
+                    this.limiter = new Tone.Limiter(-6); // -6dBでリミット
 
-                    // 基本的なシンセサイザーにボリューム制御を追加
+                    // コンプレッサーを追加して音量を平滑化
+                    this.compressor = new Tone.Compressor({
+                        threshold: -24,
+                        ratio: 4,
+                        attack: 0.003,
+                        release: 0.1
+                    });
+
+                    // マスターボリュームをさらに下げる
+                    this.masterVolume = new Tone.Volume(-18); // -18dB（約1/8の音量）
+
+                    // 低域フィルターでパチパチ音を軽減
+                    this.lowPassFilter = new Tone.Filter({
+                        frequency: 8000,
+                        type: "lowpass",
+                        rolloff: -12
+                    });
+
+                    // 改良されたシンセサイザー設定
                     this.synth = new Tone.PolySynth({
-                        maxPolyphony: 32, // 同時発音数を32に制限（重要な改善点）
+                        maxPolyphony: 16, // 同時発音数をさらに制限
                         voice: Tone.Synth,
                         options: {
+                            oscillator: {
+                                type: "sine" // より柔らかい音色
+                            },
                             envelope: {
-                                attack: 0.005,  // 少し自然な立ち上がりに
-                                release: 0.3    // 少し自然な減衰に
-                            }
+                                attack: 0.01,  // ゆっくりとした立ち上がり
+                                decay: 0.2,
+                                sustain: 0.3,
+                                release: 0.8   // ゆっくりとした減衰
+                            },
+                            volume: -12 // シンセ自体の音量も下げる
                         }
-                    }).connect(this.masterVolume).toDestination();
+                    }).connect(this.lowPassFilter)
+                        .connect(this.compressor)
+                        .connect(this.limiter)
+                        .connect(this.masterVolume)
+                        .toDestination();
 
                     if (this.debugMode.checked) {
-                        console.log('安定化オーディオシステム初期化完了 - 32音ポリフォニー, -12dBマスター音量');
+                        console.log('高品質オーディオシステム初期化完了 - 16音ポリフォニー, -18dBマスター音量, リミッター/コンプレッサー有効');
                     }
                     return true;
                 } catch (error) {
                     console.error('Audio init failed:', error);
-                    // フォールバック：最もシンプルな構成
-                    this.synth = new Tone.MonoSynth().toDestination();
+                    // シンプルなフォールバック
+                    this.synth = new Tone.MonoSynth({
+                        envelope: {
+                            attack: 0.02,
+                            release: 0.5
+                        },
+                        volume: -20
+                    }).toDestination();
                     console.log('フォールバック：モノフォニックシンセサイザーで初期化');
                     return true;
                 }
@@ -536,25 +569,17 @@
                 this.bigChunks.set(bigChunkId, bigChunk);
 
                 if (this.debugMode.checked) {
-                    console.log(`大チャンク作成: ${bigChunkId}`);
+                    console.log(`大チャンク作成: ${bigChunkId} (${bigChunk.startTime.toFixed(1)}s〜${bigChunk.endTime.toFixed(1)}s)`);
                 }
 
-                // 新しい大チャンクの音符をキューに追加
+                // 新しい大チャンクの音符をキューに追加（即座再生判定含む）
                 this.addBigChunkToQueue(bigChunk);
-
-                // 再生が開始されていない場合、条件を満たせば開始
-                if (!this.isPlaying && this.shouldStartPlayback()) {
-                    setTimeout(() => this.startPlayback(), 100);
-                }
             }
 
-            // 再生開始条件の判定（任意の位置から開始可能）
-            shouldStartPlayback() {
-                // 大チャンクが1つ以上あり、音符キューにデータがあれば再生開始
-                return this.bigChunks.size >= 1 && this.noteQueue.length > 0;
-            }
+            // 再生開始条件の判定を削除（不要になったため）
+            // shouldStartPlayback() メソッドは削除
 
-            // 大チャンクの音符をキューに追加（時間ベース進捗対応）
+            // 大チャンクの音符をキューに追加（即座再生対応）
             addBigChunkToQueue(bigChunk) {
                 const newNotes = [];
 
@@ -567,7 +592,7 @@
                                 duration: note.duration,
                                 velocity: note.velocity,
                                 chunkId: bigChunk.id,
-                                uniqueId: `${timeGroup.time}-${note.pitch}-${bigChunk.id}` // 重複防止用ID
+                                uniqueId: `${timeGroup.time}-${note.pitch}-${bigChunk.id}`
                             });
                         });
                     });
@@ -591,59 +616,88 @@
                     this.updateDurationInfo();
 
                     if (this.debugMode.checked) {
-                        console.log(`キューに${uniqueNewNotes.length}音符追加（重複除外：${newNotes.length - uniqueNewNotes.length}）。受信時間: ${this.receivedMusicDuration.toFixed(1)}s / 推定${this.estimatedTotalDuration.toFixed(1)}s`);
+                        const firstNote = this.noteQueue[0];
+                        const lastNote = this.noteQueue[this.noteQueue.length - 1];
+                        console.log(`キューに${uniqueNewNotes.length}音符追加。時間範囲: ${firstNote.time.toFixed(1)}s〜${lastNote.time.toFixed(1)}s`);
+                    }
+
+                    // 再生中でない場合、即座に再生開始を試行
+                    if (!this.isPlaying && this.noteQueue.length > 0) {
+                        setTimeout(() => {
+                            if (!this.isPlaying && this.noteQueue.length > 0) {
+                                this.startPlaybackFromCurrentPosition();
+                            }
+                        }, 50);
                     }
                 }
             }
 
-            // 楽曲の時間情報を更新する関数
+            // 現在受信している位置から即座に再生開始
+            startPlaybackFromCurrentPosition() {
+                if (this.isPlaying || this.noteQueue.length === 0) return;
+
+                // 最初に受信した音符の時刻から再生開始
+                const firstNoteTime = this.noteQueue[0].time;
+
+                if (this.debugMode.checked) {
+                    console.log(`即座再生開始: ${firstNoteTime.toFixed(3)}s から開始（受信チャンク数: ${this.receivedChunks.size}）`);
+                }
+
+                this.startPlayback();
+            }
+
+            // 楽曲の時間情報を更新する関数（任意位置再生対応）
             updateDurationInfo() {
                 // 受信済みチャンクから受信済み音楽時間を計算
                 if (this.receivedChunks.size > 0) {
                     const sortedChunks = Array.from(this.receivedChunks.values())
                         .sort((a, b) => a.index - b.index);
 
-                    // 連続して受信できている最後のチャンクを見つける
-                    let continuousEndTime = 0;
-                    let expectedIndex = 0;
+                    // 最初のチャンクから連続している部分を探す
+                    const firstChunk = sortedChunks[0];
+                    let continuousEndTime = firstChunk.endTime;
+                    let expectedIndex = firstChunk.index + 1;
 
-                    for (const chunk of sortedChunks) {
+                    for (let i = 1; i < sortedChunks.length; i++) {
+                        const chunk = sortedChunks[i];
                         if (chunk.index === expectedIndex) {
                             continuousEndTime = chunk.endTime;
                             expectedIndex++;
                         } else {
-                            break; // 欠けているチャンクがあるので、そこで止める
+                            break;
                         }
                     }
 
-                    this.receivedMusicDuration = continuousEndTime;
+                    this.receivedMusicDuration = continuousEndTime - firstChunk.startTime;
 
-                    // 楽曲全体の長さを推定（受信済みチャンクから）
+                    // 楽曲全体の長さを推定
                     if (sortedChunks.length > 0) {
                         const totalChunks = sortedChunks[0].total;
                         const receivedChunks = this.receivedChunks.size;
 
                         if (receivedChunks > 0 && totalChunks > 0) {
                             // 平均チャンク時間から全体を推定
-                            const avgChunkDuration = continuousEndTime / expectedIndex;
+                            const avgChunkDuration = this.receivedMusicDuration / (expectedIndex - firstChunk.index);
                             this.estimatedTotalDuration = avgChunkDuration * totalChunks;
                         }
                     }
                 }
 
-                // キューの最後の音符から実際の演奏時間を取得
+                // キューの音符から実際の演奏時間範囲を取得
                 if (this.noteQueue.length > 0) {
+                    const firstNote = this.noteQueue[0];
                     const lastNote = this.noteQueue[this.noteQueue.length - 1];
-                    this.totalMusicDuration = lastNote.time + (lastNote.duration || 0.5);
+                    this.totalMusicDuration = lastNote.time + (lastNote.duration || 0.5) - firstNote.time;
                 }
 
                 // 再生済み音符からも確認
                 if (this.playedNotes.length > 0) {
-                    const lastPlayedNote = this.playedNotes[this.playedNotes.length - 1];
-                    this.totalMusicDuration = Math.max(
-                        this.totalMusicDuration,
-                        lastPlayedNote.time + (lastPlayedNote.duration || 0.5)
-                    );
+                    const allNotes = [...this.playedNotes, ...this.noteQueue].sort((a, b) => a.time - b.time);
+                    if (allNotes.length > 0) {
+                        const firstNote = allNotes[0];
+                        const lastNote = allNotes[allNotes.length - 1];
+                        this.totalMusicDuration = lastNote.time + (lastNote.duration || 0.5) - firstNote.time;
+                    }
                 }
             }
 
