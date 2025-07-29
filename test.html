@@ -320,65 +320,94 @@
                 try {
                     await Tone.start();
 
-                    // リミッターを追加してクリッピングを防止
-                    this.limiter = new Tone.Limiter(-6); // -6dBでリミット
+                    // マスターボリュームコントロールを追加
+                    this.masterVolume = new Tone.Volume(-12); // -12dB（約1/4の音量）
 
-                    // コンプレッサーを追加して音量を平滑化
-                    this.compressor = new Tone.Compressor({
-                        threshold: -24,
-                        ratio: 4,
-                        attack: 0.003,
-                        release: 0.1
+                    // ローパスフィルターを追加（高い周波数をカットして柔らかい音に）
+                    this.filter = new Tone.Filter({
+                        frequency: 2000,    // 2kHz以上をカット
+                        type: "lowpass",    // ローパスフィルター
+                        rolloff: -24        // 急峻なカットオフ
                     });
 
-                    // マスターボリュームをさらに下げる
-                    this.masterVolume = new Tone.Volume(-18); // -18dB（約1/8の音量）
-
-                    // 低域フィルターでパチパチ音を軽減
-                    this.lowPassFilter = new Tone.Filter({
-                        frequency: 8000,
-                        type: "lowpass",
-                        rolloff: -12
+                    // リバーブエフェクトを追加（空間的な広がりと柔らかさ）
+                    this.reverb = new Tone.Reverb({
+                        decay: 2,           // 2秒のリバーブ
+                        wet: 0.3            // リバーブの強さ（30%）
                     });
 
-                    // 改良されたシンセサイザー設定
+                    // リバーブの非同期初期化を待つ（重要！）
+                    if (this.debugMode.checked) {
+                        console.log('リバーブ初期化中...');
+                    }
+                    await this.reverb.generate();
+                    if (this.debugMode.checked) {
+                        console.log('リバーブ初期化完了');
+                    }
+
+                    // より柔らかい音のシンセサイザーを作成
                     this.synth = new Tone.PolySynth({
-                        maxPolyphony: 16, // 同時発音数をさらに制限
+                        maxPolyphony: 32,
                         voice: Tone.Synth,
                         options: {
                             oscillator: {
-                                type: "sine" // より柔らかい音色
+                                type: "triangle"  // 三角波（サイン波より少し豊かで、ノコギリ波より柔らか）
                             },
                             envelope: {
-                                attack: 0.01,  // ゆっくりとした立ち上がり
-                                decay: 0.2,
-                                sustain: 0.3,
-                                release: 0.8   // ゆっくりとした減衰
+                                attack: 0.1,     // ゆっくりとした立ち上がり（100ms）
+                                decay: 0.3,      // 適度な減衰時間
+                                sustain: 0.6,    // サステインレベル（60%）
+                                release: 0.8     // ゆっくりとした減衰（800ms）
                             },
-                            volume: -12 // シンセ自体の音量も下げる
+                            filter: {
+                                frequency: 1500, // シンセ内蔵フィルターも少し低めに
+                                type: "lowpass",
+                                rolloff: -12
+                            },
+                            filterEnvelope: {
+                                attack: 0.1,
+                                decay: 0.2,
+                                sustain: 0.5,
+                                release: 0.8,
+                                baseFrequency: 800,  // フィルターの基本周波数
+                                octaves: 2           // フィルターの変化幅
+                            }
                         }
-                    }).connect(this.lowPassFilter)
-                        .connect(this.compressor)
-                        .connect(this.limiter)
-                        .connect(this.masterVolume)
-                        .toDestination();
+                    })
+                        .chain(this.filter, this.reverb, this.masterVolume, Tone.Destination);
 
                     if (this.debugMode.checked) {
-                        console.log('高品質オーディオシステム初期化完了 - 16音ポリフォニー, -18dBマスター音量, リミッター/コンプレッサー有効');
+                        console.log('柔らかい音質のオーディオシステム初期化完了 - 三角波, ローパスフィルター, リバーブ付き');
                     }
                     return true;
                 } catch (error) {
                     console.error('Audio init failed:', error);
-                    // シンプルなフォールバック
-                    this.synth = new Tone.MonoSynth({
-                        envelope: {
-                            attack: 0.02,
-                            release: 0.5
-                        },
-                        volume: -20
-                    }).toDestination();
-                    console.log('フォールバック：モノフォニックシンセサイザーで初期化');
-                    return true;
+                    // フォールバック：リバーブなしのシンプルだが柔らかい設定
+                    try {
+                        this.filter = new Tone.Filter({
+                            frequency: 2000,
+                            type: "lowpass"
+                        });
+
+                        this.synth = new Tone.PolySynth({
+                            voice: Tone.Synth,
+                            options: {
+                                oscillator: { type: "triangle" },
+                                envelope: { attack: 0.1, release: 0.8 }
+                            }
+                        }).chain(this.filter, Tone.Destination);
+
+                        console.log('フォールバック：リバーブなし柔らかいシンセで初期化');
+                        return true;
+                    } catch (fallbackError) {
+                        // 最終フォールバック：最もシンプルな構成
+                        this.synth = new Tone.MonoSynth({
+                            oscillator: { type: "triangle" },
+                            envelope: { attack: 0.1, release: 0.8 }
+                        }).toDestination();
+                        console.log('最終フォールバック：シンプルなモノシンセで初期化');
+                        return true;
+                    }
                 }
             }
 
@@ -518,7 +547,7 @@
                 return note + octave;
             }
 
-            // 大チャンク作成（任意の位置から再生可能）
+            // 大チャンク作成（小さなグループも処理）
             createBigChunks() {
                 const bigChunkSize = parseInt(this.bigChunkSize.value);
                 const sortedIndices = Array.from(this.receivedChunks.keys()).sort((a, b) => a - b);
@@ -569,17 +598,19 @@
                 this.bigChunks.set(bigChunkId, bigChunk);
 
                 if (this.debugMode.checked) {
-                    console.log(`大チャンク作成: ${bigChunkId} (${bigChunk.startTime.toFixed(1)}s〜${bigChunk.endTime.toFixed(1)}s)`);
+                    console.log(`大チャンク作成: ${bigChunkId}`);
                 }
 
-                // 新しい大チャンクの音符をキューに追加（即座再生判定含む）
+                // 新しい大チャンクの音符をキューに追加
                 this.addBigChunkToQueue(bigChunk);
+
+                // 最初の大チャンクが完成したら再生開始
+                if (this.bigChunks.size === 1 && !this.isPlaying) {
+                    setTimeout(() => this.startPlayback(), 100);
+                }
             }
 
-            // 再生開始条件の判定を削除（不要になったため）
-            // shouldStartPlayback() メソッドは削除
-
-            // 大チャンクの音符をキューに追加（即座再生対応）
+            // 大チャンクの音符をキューに追加（時間ベース進捗対応）
             addBigChunkToQueue(bigChunk) {
                 const newNotes = [];
 
@@ -592,7 +623,7 @@
                                 duration: note.duration,
                                 velocity: note.velocity,
                                 chunkId: bigChunk.id,
-                                uniqueId: `${timeGroup.time}-${note.pitch}-${bigChunk.id}`
+                                uniqueId: `${timeGroup.time}-${note.pitch}-${bigChunk.id}` // 重複防止用ID
                             });
                         });
                     });
@@ -616,92 +647,63 @@
                     this.updateDurationInfo();
 
                     if (this.debugMode.checked) {
-                        const firstNote = this.noteQueue[0];
-                        const lastNote = this.noteQueue[this.noteQueue.length - 1];
-                        console.log(`キューに${uniqueNewNotes.length}音符追加。時間範囲: ${firstNote.time.toFixed(1)}s〜${lastNote.time.toFixed(1)}s`);
-                    }
-
-                    // 再生中でない場合、即座に再生開始を試行
-                    if (!this.isPlaying && this.noteQueue.length > 0) {
-                        setTimeout(() => {
-                            if (!this.isPlaying && this.noteQueue.length > 0) {
-                                this.startPlaybackFromCurrentPosition();
-                            }
-                        }, 50);
+                        console.log(`キューに${uniqueNewNotes.length}音符追加（重複除外：${newNotes.length - uniqueNewNotes.length}）。受信時間: ${this.receivedMusicDuration.toFixed(1)}s / 推定${this.estimatedTotalDuration.toFixed(1)}s`);
                     }
                 }
             }
 
-            // 現在受信している位置から即座に再生開始
-            startPlaybackFromCurrentPosition() {
-                if (this.isPlaying || this.noteQueue.length === 0) return;
-
-                // 最初に受信した音符の時刻から再生開始
-                const firstNoteTime = this.noteQueue[0].time;
-
-                if (this.debugMode.checked) {
-                    console.log(`即座再生開始: ${firstNoteTime.toFixed(3)}s から開始（受信チャンク数: ${this.receivedChunks.size}）`);
-                }
-
-                this.startPlayback();
-            }
-
-            // 楽曲の時間情報を更新する関数（任意位置再生対応）
+            // 楽曲の時間情報を更新する関数
             updateDurationInfo() {
                 // 受信済みチャンクから受信済み音楽時間を計算
                 if (this.receivedChunks.size > 0) {
                     const sortedChunks = Array.from(this.receivedChunks.values())
                         .sort((a, b) => a.index - b.index);
 
-                    // 最初のチャンクから連続している部分を探す
-                    const firstChunk = sortedChunks[0];
-                    let continuousEndTime = firstChunk.endTime;
-                    let expectedIndex = firstChunk.index + 1;
+                    // 連続して受信できている最後のチャンクを見つける
+                    let continuousEndTime = 0;
+                    let expectedIndex = 0;
 
-                    for (let i = 1; i < sortedChunks.length; i++) {
-                        const chunk = sortedChunks[i];
+                    for (const chunk of sortedChunks) {
                         if (chunk.index === expectedIndex) {
                             continuousEndTime = chunk.endTime;
                             expectedIndex++;
                         } else {
-                            break;
+                            break; // 欠けているチャンクがあるので、そこで止める
                         }
                     }
 
-                    this.receivedMusicDuration = continuousEndTime - firstChunk.startTime;
+                    this.receivedMusicDuration = continuousEndTime;
 
-                    // 楽曲全体の長さを推定
+                    // 楽曲全体の長さを推定（受信済みチャンクから）
                     if (sortedChunks.length > 0) {
                         const totalChunks = sortedChunks[0].total;
                         const receivedChunks = this.receivedChunks.size;
 
                         if (receivedChunks > 0 && totalChunks > 0) {
                             // 平均チャンク時間から全体を推定
-                            const avgChunkDuration = this.receivedMusicDuration / (expectedIndex - firstChunk.index);
+                            const avgChunkDuration = continuousEndTime / expectedIndex;
                             this.estimatedTotalDuration = avgChunkDuration * totalChunks;
                         }
                     }
                 }
 
-                // キューの音符から実際の演奏時間範囲を取得
+                // キューの最後の音符から実際の演奏時間を取得
                 if (this.noteQueue.length > 0) {
-                    const firstNote = this.noteQueue[0];
                     const lastNote = this.noteQueue[this.noteQueue.length - 1];
-                    this.totalMusicDuration = lastNote.time + (lastNote.duration || 0.5) - firstNote.time;
+                    this.totalMusicDuration = lastNote.time + (lastNote.duration || 0.5);
                 }
 
                 // 再生済み音符からも確認
                 if (this.playedNotes.length > 0) {
-                    const allNotes = [...this.playedNotes, ...this.noteQueue].sort((a, b) => a.time - b.time);
-                    if (allNotes.length > 0) {
-                        const firstNote = allNotes[0];
-                        const lastNote = allNotes[allNotes.length - 1];
-                        this.totalMusicDuration = lastNote.time + (lastNote.duration || 0.5) - firstNote.time;
-                    }
+                    const lastPlayedNote = this.playedNotes[this.playedNotes.length - 1];
+                    this.totalMusicDuration = Math.max(
+                        this.totalMusicDuration,
+                        lastPlayedNote.time + (lastPlayedNote.duration || 0.5)
+                    );
                 }
             }
 
-            // キューイング再生開始（任意の位置から開始対応）
+            // キューイング再生開始
             async startPlayback() {
                 if (this.isPlaying || this.noteQueue.length === 0) return;
 
@@ -713,22 +715,12 @@
                     }
                 }
 
-                // 最初に受信した音符の時刻を基準点として設定
-                const firstNoteTime = this.noteQueue[0].time;
-
                 this.isPlaying = true;
                 this.stopPlayBtn.disabled = false;
                 this.playbackStartTime = Date.now();
+                this.currentPlaybackTime = 0;
 
-                // 再生開始時刻を最初の音符時刻に合わせる
-                this.playbackOffset = firstNoteTime;
-                this.currentPlaybackTime = firstNoteTime;
-
-                if (this.debugMode.checked) {
-                    console.log(`再生開始: 基準時刻 ${firstNoteTime.toFixed(3)}s から開始`);
-                }
-
-                this.updateReceiverStatus(`再生中... (${firstNoteTime.toFixed(1)}s〜)`, 'playing');
+                this.updateReceiverStatus('再生中...', 'playing');
                 this.startQueueProcessor();
             }
 
