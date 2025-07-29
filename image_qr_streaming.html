@@ -35,7 +35,8 @@
             color: #333;
         }
 
-        video, canvas {
+        video,
+        canvas {
             width: 100%;
             max-width: 400px;
             aspect-ratio: 1 / 1;
@@ -86,7 +87,8 @@
             font-size: 14px;
         }
 
-        input[type="range"], input[type="number"] {
+        input[type="range"],
+        input[type="number"] {
             padding: 8px;
             border: 1px solid #ddd;
             border-radius: 4px;
@@ -256,7 +258,8 @@
             </div>
 
             <div class="received-image">
-                <canvas id="previewCanvas" style="display: none; max-width: 100%; border: 2px solid #28a745; border-radius: 8px;"></canvas>
+                <canvas id="previewCanvas"
+                    style="display: none; max-width: 100%; border: 2px solid #28a745; border-radius: 8px;"></canvas>
                 <div id="imageInfo" style="margin-top: 10px; font-size: 14px; color: #666;"></div>
             </div>
         </div>
@@ -451,29 +454,45 @@
             scanFrame() {
                 if (!this.isScanning) return;
 
-                const videoAspect = this.video.videoWidth / this.video.videoHeight;
-                let sx, sy, sWidth, sHeight;
+                try {
+                    const videoAspect = this.video.videoWidth / this.video.videoHeight;
+                    let sx, sy, sWidth, sHeight;
 
-                if (videoAspect > 1) {
-                    sHeight = this.video.videoHeight;
-                    sWidth = sHeight;
-                    sx = (this.video.videoWidth - sWidth) / 2;
-                    sy = 0;
-                } else {
-                    sWidth = this.video.videoWidth;
-                    sHeight = sWidth;
-                    sx = 0;
-                    sy = (this.video.videoHeight - sHeight) / 2;
-                }
+                    if (videoAspect > 1) {
+                        sHeight = this.video.videoHeight;
+                        sWidth = sHeight;
+                        sx = (this.video.videoWidth - sWidth) / 2;
+                        sy = 0;
+                    } else {
+                        sWidth = this.video.videoWidth;
+                        sHeight = sWidth;
+                        sx = 0;
+                        sy = (this.video.videoHeight - sHeight) / 2;
+                    }
 
-                this.ctx.drawImage(this.video, sx, sy, sWidth, sHeight, 0, 0, this.canvas.width, this.canvas.height);
-                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                    this.ctx.drawImage(this.video, sx, sy, sWidth, sHeight, 0, 0, this.canvas.width, this.canvas.height);
+                    const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
 
-                this.scanCount++;
+                    // jsQRの設定を調整
+                    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                        inversionAttempts: "dontInvert",
+                    });
 
-                if (code) {
-                    this.processQRCode(code.data);
+                    this.scanCount++;
+
+                    if (code) {
+                        if (this.debugMode.checked) {
+                            console.log('QRコード検出:', code.data.length, '文字');
+                        }
+                        this.processQRCode(code.data);
+                    } else if (this.debugMode.checked && this.scanCount % 30 === 0) {
+                        // 30フレームごとにデバッグ情報を表示
+                        console.log('QRコード未検出 - フレーム:', this.scanCount);
+                    }
+                } catch (error) {
+                    if (this.debugMode.checked) {
+                        console.error('スキャンエラー:', error);
+                    }
                 }
 
                 requestAnimationFrame(() => this.scanFrame());
@@ -495,7 +514,10 @@
             }
 
             receiveChunk(chunkData) {
-                const chunkId = chunkData.index;
+                // 短縮されたプロパティ名を元に戻す
+                const chunkId = chunkData.i;  // index
+                const totalChunks = chunkData.t;  // total
+                const data = chunkData.d;  // data
 
                 if (this.receivedChunks.has(chunkId)) {
                     return; // 既に受信済み
@@ -504,20 +526,24 @@
                 // 最初のチャンクからメタデータを取得
                 if (chunkId === 0) {
                     this.imageMetadata = {
-                        width: chunkData.width,
-                        height: chunkData.height,
-                        format: chunkData.format || 'jpeg',
-                        totalChunks: chunkData.total
+                        width: chunkData.w,   // width
+                        height: chunkData.h,  // height
+                        format: chunkData.f || 'jpeg',  // format
+                        totalChunks: totalChunks
                     };
-                    this.totalExpectedChunks = chunkData.total;
+                    this.totalExpectedChunks = totalChunks;
                     this.transferStartTime = Date.now();
+
+                    if (this.debugMode.checked) {
+                        console.log('画像メタデータ受信:', this.imageMetadata);
+                    }
                 }
 
-                this.receivedChunks.set(chunkId, chunkData.data);
+                this.receivedChunks.set(chunkId, data);
                 this.lastChunkTime = Date.now();
 
                 if (this.debugMode.checked) {
-                    console.log(`チャンク ${chunkId + 1}/${this.totalExpectedChunks} 受信`);
+                    console.log(`チャンク ${chunkId + 1}/${this.totalExpectedChunks} 受信 (${data.length}文字)`);
                 }
 
                 this.updateReceiverProgress();
@@ -583,7 +609,7 @@
                     a.click();
                     document.body.removeChild(a);
                     URL.revokeObjectURL(url);
-                    
+
                     this.updateReceiverStatus('画像を保存しました', 'success');
                 }, this.imageMetadata.format === 'png' ? 'image/png' : 'image/jpeg');
             }
@@ -675,15 +701,15 @@
                     // キャンバスに画像を描画
                     const canvas = document.createElement('canvas');
                     const ctx = canvas.getContext('2d');
-                    
+
                     canvas.width = this.originalImage.naturalWidth;
                     canvas.height = this.originalImage.naturalHeight;
                     ctx.drawImage(this.originalImage, 0, 0);
 
                     // 品質に応じて圧縮
                     const quality = parseInt(this.qualitySlider.value) / 100;
-                    const dataURL = canvas.toBlob ? 
-                        await this.canvasToDataURL(canvas, quality) : 
+                    const dataURL = canvas.toBlob ?
+                        await this.canvasToDataURL(canvas, quality) :
                         canvas.toDataURL('image/jpeg', quality);
 
                     // BASE64データを抽出
@@ -727,33 +753,40 @@
                     const chunkData = this.originalImageData.substring(start, end);
 
                     const chunk = {
-                        index: i,
-                        total: totalChunks,
-                        data: chunkData
+                        i: i,    // indexをiに短縮
+                        t: totalChunks,  // totalをtに短縮
+                        d: chunkData     // dataをdに短縮
                     };
 
                     // 最初のチャンクにメタデータを含める
                     if (i === 0) {
-                        chunk.width = this.imageMetadata.width;
-                        chunk.height = this.imageMetadata.height;
-                        chunk.format = this.imageMetadata.format;
+                        chunk.w = this.imageMetadata.width;   // widthをwに短縮
+                        chunk.h = this.imageMetadata.height;  // heightをhに短縮
+                        chunk.f = this.imageMetadata.format;  // formatをfに短縮
                     }
 
                     const qrData = 'IMG:' + JSON.stringify(chunk);
+
+                    // QRコードサイズ制限チェック
+                    if (qrData.length > 2900) {
+                        this.updateSenderStatus(`エラー: チャンクサイズが大きすぎます。${this.chunkSize.value}から${Math.floor(this.chunkSize.value * 0.8)}に減らしてください`, 'error');
+                        return;
+                    }
+
                     this.qrChunks.push(qrData);
                 }
 
                 // 統計更新
                 this.totalChunks.textContent = totalChunks;
                 this.compressedSize.textContent = `${Math.round(this.originalImageData.length / 1024)} KB`;
-                
+
                 const fps = parseInt(this.flashFPS.value);
                 const estimatedSeconds = Math.round(totalChunks / fps);
                 this.estimatedTime.textContent = `${estimatedSeconds}秒`;
 
                 this.flashBtn.disabled = false;
                 this.currentChunkIndex = 0;
-                this.updateSenderStatus(`${totalChunks}個のQRコード生成完了`, 'success');
+                this.updateSenderStatus(`${totalChunks}個のQRコード生成完了 (平均${Math.round(this.qrChunks[0].length)}文字)`, 'success');
 
                 // 最初のQRコードを表示
                 if (this.qrChunks.length > 0) {
@@ -763,18 +796,30 @@
 
             displayQRCode(data, index) {
                 try {
+                    // データサイズチェック
+                    if (data.length > 2900) {
+                        this.updateSenderStatus(`警告: チャンク${index + 1}が大きすぎます (${data.length}文字)`, 'error');
+                        return;
+                    }
+
                     const qr = new QRious({
                         element: this.qrCanvas,
                         value: data,
-                        size: 350,
+                        size: 400, // サイズを大きくして読み取りやすく
                         background: 'white',
                         foreground: 'black',
                         level: 'L' // エラー訂正レベルを下げて容量を最大化
                     });
 
                     this.qrInfo.textContent = `チャンク ${index + 1} (${data.length} 文字)`;
+
+                    if (this.debugMode.checked) {
+                        console.log(`QRコード生成: チャンク${index + 1}, ${data.length}文字`);
+                        console.log('データ先頭:', data.substring(0, 50));
+                    }
                 } catch (error) {
                     this.updateSenderStatus('QRコード生成エラー: ' + error.message, 'error');
+                    console.error('QR生成エラー:', error, 'データ長:', data.length);
                 }
             }
 
