@@ -8,7 +8,7 @@
     <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
     <script src="https://unpkg.com/qrious@4.0.2/dist/qrious.min.js"></script>
     <script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
-    <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
+
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -252,7 +252,9 @@
                 this.receivedChunks = new Map();
                 this.bigChunks = new Map();
                 this.isPlaying = false;
-                this.synth = null;
+                this.audioContext = null;
+                this.masterGain = null;
+                this.activeNotes = null;
                 this.playbackStartTime = null;
                 this.currentPlaybackTime = 0;
 
@@ -318,96 +320,23 @@
 
             async initializeAudio() {
                 try {
-                    await Tone.start();
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-                    // マスターボリュームコントロールを追加
-                    this.masterVolume = new Tone.Volume(-12); // -12dB（約1/4の音量）
+                    // マスターボリューム
+                    this.masterGain = this.audioContext.createGain();
+                    this.masterGain.gain.value = 0.3; // 30%の音量
+                    this.masterGain.connect(this.audioContext.destination);
 
-                    // ローパスフィルターを追加（高い周波数をカットして柔らかい音に）
-                    this.filter = new Tone.Filter({
-                        frequency: 2000,    // 2kHz以上をカット
-                        type: "lowpass",    // ローパスフィルター
-                        rolloff: -24        // 急峻なカットオフ
-                    });
-
-                    // リバーブエフェクトを追加（空間的な広がりと柔らかさ）
-                    this.reverb = new Tone.Reverb({
-                        decay: 2,           // 2秒のリバーブ
-                        wet: 0.3            // リバーブの強さ（30%）
-                    });
-
-                    // リバーブの非同期初期化を待つ（重要！）
-                    if (this.debugMode.checked) {
-                        console.log('リバーブ初期化中...');
-                    }
-                    await this.reverb.generate();
-                    if (this.debugMode.checked) {
-                        console.log('リバーブ初期化完了');
-                    }
-
-                    // より柔らかい音のシンセサイザーを作成
-                    this.synth = new Tone.PolySynth({
-                        maxPolyphony: 32,
-                        voice: Tone.Synth,
-                        options: {
-                            oscillator: {
-                                type: "triangle"  // 三角波（サイン波より少し豊かで、ノコギリ波より柔らか）
-                            },
-                            envelope: {
-                                attack: 0.1,     // ゆっくりとした立ち上がり（100ms）
-                                decay: 0.3,      // 適度な減衰時間
-                                sustain: 0.6,    // サステインレベル（60%）
-                                release: 0.8     // ゆっくりとした減衰（800ms）
-                            },
-                            filter: {
-                                frequency: 1500, // シンセ内蔵フィルターも少し低めに
-                                type: "lowpass",
-                                rolloff: -12
-                            },
-                            filterEnvelope: {
-                                attack: 0.1,
-                                decay: 0.2,
-                                sustain: 0.5,
-                                release: 0.8,
-                                baseFrequency: 800,  // フィルターの基本周波数
-                                octaves: 2           // フィルターの変化幅
-                            }
-                        }
-                    })
-                        .chain(this.filter, this.reverb, this.masterVolume, Tone.Destination);
+                    // アクティブな音符を管理
+                    this.activeNotes = new Map();
 
                     if (this.debugMode.checked) {
-                        console.log('柔らかい音質のオーディオシステム初期化完了 - 三角波, ローパスフィルター, リバーブ付き');
+                        console.log('Web Audio API初期化完了 - 軽量シンセサイザー');
                     }
                     return true;
                 } catch (error) {
                     console.error('Audio init failed:', error);
-                    // フォールバック：リバーブなしのシンプルだが柔らかい設定
-                    try {
-                        this.filter = new Tone.Filter({
-                            frequency: 2000,
-                            type: "lowpass"
-                        });
-
-                        this.synth = new Tone.PolySynth({
-                            voice: Tone.Synth,
-                            options: {
-                                oscillator: { type: "triangle" },
-                                envelope: { attack: 0.1, release: 0.8 }
-                            }
-                        }).chain(this.filter, Tone.Destination);
-
-                        console.log('フォールバック：リバーブなし柔らかいシンセで初期化');
-                        return true;
-                    } catch (fallbackError) {
-                        // 最終フォールバック：最もシンプルな構成
-                        this.synth = new Tone.MonoSynth({
-                            oscillator: { type: "triangle" },
-                            envelope: { attack: 0.1, release: 0.8 }
-                        }).toDestination();
-                        console.log('最終フォールバック：シンプルなモノシンセで初期化');
-                        return true;
-                    }
+                    return false;
                 }
             }
 
@@ -707,12 +636,17 @@
             async startPlayback() {
                 if (this.isPlaying || this.noteQueue.length === 0) return;
 
-                if (!this.synth) {
+                if (!this.audioContext) {
                     const success = await this.initializeAudio();
                     if (!success) {
                         this.updateReceiverStatus('オーディオ初期化失敗', 'error');
                         return;
                     }
+                }
+
+                // オーディオコンテキストを再開（ブラウザのAutoplay制限対応）
+                if (this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
                 }
 
                 this.isPlaying = true;
@@ -751,17 +685,13 @@
                             // 音符を再生するタイミングを計算
                             const playDelay = Math.max(0, noteToPlay.time - this.currentPlaybackTime);
 
-                            // 音量を動的に調整（同時発音数に応じて音量を下げる）
-                            const adjustedVelocity = this.calculateSafeVelocity(noteToPlay.velocity || 0.8);
-
                             try {
-                                // Tone.jsのスケジューリング機能を使用
-                                // これにより、より正確なタイミングで音符を再生できます
-                                this.synth.triggerAttackRelease(
+                                // Web Audio APIで音符を再生
+                                this.playNote(
                                     noteToPlay.pitch,
                                     noteToPlay.duration || 0.5,
-                                    "+" + playDelay.toFixed(3), // 相対的な時間指定
-                                    adjustedVelocity
+                                    noteToPlay.velocity || 0.8,
+                                    playDelay
                                 );
                                 notesPlayed++;
 
@@ -783,8 +713,7 @@
 
                     // パフォーマンス情報の表示（デバッグ時）
                     if (this.debugMode.checked && notesPlayed > 0) {
-                        const activeVoices = this.synth.activeVoices ? this.synth.activeVoices : 'unknown';
-                        console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符スケジュール済み, アクティブ音声: ${activeVoices}, キュー残り: ${this.noteQueue.length}`);
+                        console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符再生, キュー残り: ${this.noteQueue.length}`);
                     }
 
                     // 時間情報を更新して進捗表示を正確に保つ
