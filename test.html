@@ -37,10 +37,15 @@
             color: #333;
         }
 
+        /* ビデオとキャンバスを正方形に統一 */
         video,
         canvas {
             width: 100%;
             max-width: 400px;
+            aspect-ratio: 1 / 1;
+            /* 正方形を強制 */
+            object-fit: cover;
+            /* ビデオの場合、中央部分をトリミング */
             border: 2px solid #ddd;
             border-radius: 8px;
         }
@@ -352,8 +357,10 @@
                     });
                     this.video.srcObject = stream;
                     this.video.addEventListener('loadedmetadata', () => {
-                        this.canvas.width = this.video.videoWidth;
-                        this.canvas.height = this.video.videoHeight;
+                        // キャンバスも正方形にする
+                        const size = Math.min(this.video.videoWidth, this.video.videoHeight);
+                        this.canvas.width = size;
+                        this.canvas.height = size;
                         this.startScanning();
                     });
 
@@ -384,7 +391,25 @@
             scanFrame() {
                 if (!this.isScanning) return;
 
-                this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+                // ビデオの中央部分を正方形でトリミングしてキャンバスに描画
+                const videoAspect = this.video.videoWidth / this.video.videoHeight;
+                let sx, sy, sWidth, sHeight;
+
+                if (videoAspect > 1) {
+                    // 横長の場合、中央の正方形部分を切り出し
+                    sHeight = this.video.videoHeight;
+                    sWidth = sHeight;
+                    sx = (this.video.videoWidth - sWidth) / 2;
+                    sy = 0;
+                } else {
+                    // 縦長の場合、中央の正方形部分を切り出し
+                    sWidth = this.video.videoWidth;
+                    sHeight = sWidth;
+                    sx = 0;
+                    sy = (this.video.videoHeight - sHeight) / 2;
+                }
+
+                this.ctx.drawImage(this.video, sx, sy, sWidth, sHeight, 0, 0, this.canvas.width, this.canvas.height);
                 const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
                 const code = jsQR(imageData.data, imageData.width, imageData.height);
 
@@ -715,7 +740,6 @@
                             }, 2000);
                         }
                     }
-
                 }, 50); // 50msに変更（負荷軽減とタイミング精度のバランス）
             }
 
