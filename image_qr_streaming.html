@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>画像QRストリーミング - リアルタイム転送</title>
+    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script src="https://unpkg.com/qrious@4.0.2/dist/qrious.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            margin-top: 0;
+            color: #333;
+        }
+
+        video, canvas {
+            width: 100%;
+            max-width: 400px;
+            aspect-ratio: 1 / 1;
+            object-fit: cover;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+        }
+
+        .image-preview {
+            max-width: 100%;
+            max-height: 300px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+
+        .controls {
+            margin: 15px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        input[type="file"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        input[type="range"], input[type="number"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .status.warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .qr-display {
+            text-align: center;
+            padding: 20px;
+            min-height: 400px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .qr-canvas {
+            border: 2px solid #333;
+            max-width: 100%;
+            margin-bottom: 15px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 25px;
+            background: #e9ecef;
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 10px 0;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            transition: width 0.3s;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+        }
+
+        .progress-send {
+            background: linear-gradient(45deg, #007bff, #0056b3);
+        }
+
+        .progress-receive {
+            background: linear-gradient(45deg, #28a745, #1e7e34);
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+
+        .stat-item {
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .label {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .received-image {
+            text-align: center;
+            margin: 15px 0;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <!-- 受信側 -->
+        <div class="panel">
+            <h2>📥 画像受信</h2>
+
+            <video id="video" autoplay></video>
+            <canvas id="canvas" style="display: none;"></canvas>
+
+            <div class="controls">
+                <button id="startBtn">カメラ開始</button>
+                <button id="stopBtn" disabled>停止</button>
+                <button id="clearBtn">クリア</button>
+                <button id="saveBtn" disabled>画像保存</button>
+            </div>
+
+            <div class="controls">
+                <label>
+                    <input type="checkbox" id="debugMode">
+                    デバッグモード
+                </label>
+                <label>
+                    <input type="checkbox" id="autoSave">
+                    自動保存
+                </label>
+            </div>
+
+            <div id="receiverStatus" class="status info">カメラを開始してください</div>
+
+            <div class="progress-bar">
+                <div id="receiveProgress" class="progress-fill progress-receive">0%</div>
+            </div>
+
+            <div class="stats">
+                <div class="stat-item">
+                    <strong>受信チャンク</strong><br>
+                    <span id="receivedChunks">0 / 0</span>
+                </div>
+                <div class="stat-item">
+                    <strong>データサイズ</strong><br>
+                    <span id="receivedSize">0 KB</span>
+                </div>
+                <div class="stat-item">
+                    <strong>転送速度</strong><br>
+                    <span id="transferSpeed">0 KB/s</span>
+                </div>
+                <div class="stat-item">
+                    <strong>エラー率</strong><br>
+                    <span id="errorRate">0%</span>
+                </div>
+            </div>
+
+            <div class="received-image">
+                <canvas id="previewCanvas" style="display: none; max-width: 100%; border: 2px solid #28a745; border-radius: 8px;"></canvas>
+                <div id="imageInfo" style="margin-top: 10px; font-size: 14px; color: #666;"></div>
+            </div>
+        </div>
+
+        <!-- 送信側 -->
+        <div class="panel">
+            <h2>📤 画像送信</h2>
+
+            <div class="controls">
+                <input type="file" id="imageFile" accept="image/*" />
+                <button id="loadImageBtn">画像読み込み</button>
+            </div>
+
+            <div class="controls">
+                <span class="label">品質:</span>
+                <input type="range" id="qualitySlider" min="10" max="95" value="70">
+                <span id="qualityValue">70%</span>
+            </div>
+
+            <div class="controls">
+                <span class="label">チャンクサイズ:</span>
+                <input type="number" id="chunkSize" value="2000" min="1000" max="2800" step="100">
+                <span>文字</span>
+            </div>
+
+            <div class="controls">
+                <span class="label">送信FPS:</span>
+                <input type="number" id="flashFPS" value="8" min="3" max="15">
+                <span>fps</span>
+            </div>
+
+            <div class="controls">
+                <button id="processBtn" disabled>画像処理</button>
+                <button id="flashBtn" disabled>送信開始</button>
+                <button id="stopFlashBtn" disabled>送信停止</button>
+            </div>
+
+            <div id="senderStatus" class="status info">画像ファイルを選択してください</div>
+
+            <div class="progress-bar">
+                <div id="sendProgress" class="progress-fill progress-send">0%</div>
+            </div>
+
+            <div class="stats">
+                <div class="stat-item">
+                    <strong>総チャンク数</strong><br>
+                    <span id="totalChunks">0</span>
+                </div>
+                <div class="stat-item">
+                    <strong>圧縮後サイズ</strong><br>
+                    <span id="compressedSize">0 KB</span>
+                </div>
+                <div class="stat-item">
+                    <strong>予想転送時間</strong><br>
+                    <span id="estimatedTime">0秒</span>
+                </div>
+                <div class="stat-item">
+                    <strong>現在チャンク</strong><br>
+                    <span id="currentChunk">0 / 0</span>
+                </div>
+            </div>
+
+            <img id="originalImage" class="image-preview" style="display: none;">
+
+            <div class="qr-display">
+                <canvas id="qrCanvas" class="qr-canvas"></canvas>
+                <div id="qrInfo" style="margin-top: 10px; font-size: 14px; color: #666;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class ImageQRStreaming {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.qrCanvas = document.getElementById('qrCanvas');
+                this.previewCanvas = document.getElementById('previewCanvas');
+                this.previewCtx = this.previewCanvas.getContext('2d');
+
+                // 受信側
+                this.isScanning = false;
+                this.receivedChunks = new Map();
+                this.totalExpectedChunks = 0;
+                this.imageMetadata = null;
+                this.transferStartTime = null;
+                this.lastChunkTime = null;
+                this.errorCount = 0;
+                this.scanCount = 0;
+
+                // 送信側
+                this.originalImageData = null;
+                this.qrChunks = [];
+                this.flashInterval = null;
+                this.currentChunkIndex = 0;
+                this.imageMetadata = null;
+
+                this.initializeElements();
+                this.setupEventListeners();
+            }
+
+            initializeElements() {
+                // 受信側
+                this.startBtn = document.getElementById('startBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.clearBtn = document.getElementById('clearBtn');
+                this.saveBtn = document.getElementById('saveBtn');
+                this.debugMode = document.getElementById('debugMode');
+                this.autoSave = document.getElementById('autoSave');
+                this.receiverStatus = document.getElementById('receiverStatus');
+                this.receiveProgress = document.getElementById('receiveProgress');
+                this.receivedChunks = document.getElementById('receivedChunks');
+                this.receivedSize = document.getElementById('receivedSize');
+                this.transferSpeed = document.getElementById('transferSpeed');
+                this.errorRate = document.getElementById('errorRate');
+                this.imageInfo = document.getElementById('imageInfo');
+
+                // 送信側
+                this.imageFile = document.getElementById('imageFile');
+                this.loadImageBtn = document.getElementById('loadImageBtn');
+                this.qualitySlider = document.getElementById('qualitySlider');
+                this.qualityValue = document.getElementById('qualityValue');
+                this.chunkSize = document.getElementById('chunkSize');
+                this.flashFPS = document.getElementById('flashFPS');
+                this.processBtn = document.getElementById('processBtn');
+                this.flashBtn = document.getElementById('flashBtn');
+                this.stopFlashBtn = document.getElementById('stopFlashBtn');
+                this.senderStatus = document.getElementById('senderStatus');
+                this.sendProgress = document.getElementById('sendProgress');
+                this.totalChunks = document.getElementById('totalChunks');
+                this.compressedSize = document.getElementById('compressedSize');
+                this.estimatedTime = document.getElementById('estimatedTime');
+                this.currentChunk = document.getElementById('currentChunk');
+                this.originalImage = document.getElementById('originalImage');
+                this.qrInfo = document.getElementById('qrInfo');
+            }
+
+            setupEventListeners() {
+                // 受信側
+                this.startBtn.addEventListener('click', () => this.startCamera());
+                this.stopBtn.addEventListener('click', () => this.stopCamera());
+                this.clearBtn.addEventListener('click', () => this.clearData());
+                this.saveBtn.addEventListener('click', () => this.saveImage());
+
+                // 送信側
+                this.loadImageBtn.addEventListener('click', () => this.loadImage());
+                this.qualitySlider.addEventListener('input', () => this.updateQualityDisplay());
+                this.processBtn.addEventListener('click', () => this.processImage());
+                this.flashBtn.addEventListener('click', () => this.startFlashing());
+                this.stopFlashBtn.addEventListener('click', () => this.stopFlashing());
+            }
+
+            // カメラ関連
+            async startCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment' }
+                    });
+                    this.video.srcObject = stream;
+                    this.video.addEventListener('loadedmetadata', () => {
+                        const size = Math.min(this.video.videoWidth, this.video.videoHeight);
+                        this.canvas.width = size;
+                        this.canvas.height = size;
+                        this.startScanning();
+                    });
+
+                    this.startBtn.disabled = true;
+                    this.stopBtn.disabled = false;
+                    this.updateReceiverStatus('カメラ開始 - QRコードをスキャン中...', 'success');
+                } catch (error) {
+                    this.updateReceiverStatus('カメラエラー: ' + error.message, 'error');
+                }
+            }
+
+            stopCamera() {
+                this.isScanning = false;
+                if (this.video.srcObject) {
+                    this.video.srcObject.getTracks().forEach(track => track.stop());
+                    this.video.srcObject = null;
+                }
+                this.startBtn.disabled = false;
+                this.stopBtn.disabled = true;
+                this.updateReceiverStatus('カメラ停止', 'info');
+            }
+
+            startScanning() {
+                this.isScanning = true;
+                this.scanFrame();
+            }
+
+            scanFrame() {
+                if (!this.isScanning) return;
+
+                const videoAspect = this.video.videoWidth / this.video.videoHeight;
+                let sx, sy, sWidth, sHeight;
+
+                if (videoAspect > 1) {
+                    sHeight = this.video.videoHeight;
+                    sWidth = sHeight;
+                    sx = (this.video.videoWidth - sWidth) / 2;
+                    sy = 0;
+                } else {
+                    sWidth = this.video.videoWidth;
+                    sHeight = sWidth;
+                    sx = 0;
+                    sy = (this.video.videoHeight - sHeight) / 2;
+                }
+
+                this.ctx.drawImage(this.video, sx, sy, sWidth, sHeight, 0, 0, this.canvas.width, this.canvas.height);
+                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+                this.scanCount++;
+
+                if (code) {
+                    this.processQRCode(code.data);
+                }
+
+                requestAnimationFrame(() => this.scanFrame());
+            }
+
+            // QRコード処理（受信側）
+            processQRCode(data) {
+                try {
+                    if (data.startsWith('IMG:')) {
+                        const chunkData = JSON.parse(data.substring(4));
+                        this.receiveChunk(chunkData);
+                    }
+                } catch (error) {
+                    this.errorCount++;
+                    if (this.debugMode.checked) {
+                        console.error('QR処理エラー:', error);
+                    }
+                }
+            }
+
+            receiveChunk(chunkData) {
+                const chunkId = chunkData.index;
+
+                if (this.receivedChunks.has(chunkId)) {
+                    return; // 既に受信済み
+                }
+
+                // 最初のチャンクからメタデータを取得
+                if (chunkId === 0) {
+                    this.imageMetadata = {
+                        width: chunkData.width,
+                        height: chunkData.height,
+                        format: chunkData.format || 'jpeg',
+                        totalChunks: chunkData.total
+                    };
+                    this.totalExpectedChunks = chunkData.total;
+                    this.transferStartTime = Date.now();
+                }
+
+                this.receivedChunks.set(chunkId, chunkData.data);
+                this.lastChunkTime = Date.now();
+
+                if (this.debugMode.checked) {
+                    console.log(`チャンク ${chunkId + 1}/${this.totalExpectedChunks} 受信`);
+                }
+
+                this.updateReceiverProgress();
+
+                // 全チャンク受信完了チェック
+                if (this.receivedChunks.size === this.totalExpectedChunks) {
+                    this.reconstructImage();
+                }
+            }
+
+            reconstructImage() {
+                try {
+                    // チャンクを順番に結合
+                    let base64Data = '';
+                    for (let i = 0; i < this.totalExpectedChunks; i++) {
+                        if (this.receivedChunks.has(i)) {
+                            base64Data += this.receivedChunks.get(i);
+                        } else {
+                            throw new Error(`チャンク ${i} が不足しています`);
+                        }
+                    }
+
+                    // データURLを作成
+                    const mimeType = this.imageMetadata.format === 'png' ? 'image/png' : 'image/jpeg';
+                    const dataURL = `data:${mimeType};base64,${base64Data}`;
+
+                    // プレビュー表示
+                    const img = new Image();
+                    img.onload = () => {
+                        this.previewCanvas.width = img.width;
+                        this.previewCanvas.height = img.height;
+                        this.previewCtx.drawImage(img, 0, 0);
+                        this.previewCanvas.style.display = 'block';
+
+                        const transferTime = (Date.now() - this.transferStartTime) / 1000;
+                        const dataSize = Math.round(base64Data.length / 1024);
+
+                        this.updateReceiverStatus(`画像受信完了！ (${transferTime.toFixed(1)}秒)`, 'success');
+                        this.imageInfo.textContent = `${img.width}×${img.height}px, ${dataSize}KB, ${this.imageMetadata.format.toUpperCase()}`;
+                        this.saveBtn.disabled = false;
+
+                        // 自動保存
+                        if (this.autoSave.checked) {
+                            this.saveImage();
+                        }
+                    };
+                    img.src = dataURL;
+
+                } catch (error) {
+                    this.updateReceiverStatus('画像復元エラー: ' + error.message, 'error');
+                }
+            }
+
+            saveImage() {
+                if (this.previewCanvas.style.display === 'none') return;
+
+                this.previewCanvas.toBlob((blob) => {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `received_image_${Date.now()}.${this.imageMetadata.format}`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    
+                    this.updateReceiverStatus('画像を保存しました', 'success');
+                }, this.imageMetadata.format === 'png' ? 'image/png' : 'image/jpeg');
+            }
+
+            updateReceiverProgress() {
+                const receivedCount = this.receivedChunks.size;
+                const totalCount = this.totalExpectedChunks || 1;
+                const percentage = Math.round((receivedCount / totalCount) * 100);
+
+                this.receiveProgress.style.width = `${percentage}%`;
+                this.receiveProgress.textContent = `${percentage}%`;
+
+                this.receivedChunks.textContent = `${receivedCount} / ${totalCount}`;
+
+                // 転送速度計算
+                if (this.transferStartTime && this.lastChunkTime) {
+                    const elapsedTime = (this.lastChunkTime - this.transferStartTime) / 1000;
+                    const receivedBytes = receivedCount * parseInt(this.chunkSize.value);
+                    const speed = Math.round((receivedBytes / 1024) / elapsedTime);
+                    this.transferSpeed.textContent = `${speed} KB/s`;
+                }
+
+                // データサイズ
+                const totalBytes = receivedCount * parseInt(this.chunkSize.value);
+                this.receivedSize.textContent = `${Math.round(totalBytes / 1024)} KB`;
+
+                // エラー率
+                if (this.scanCount > 0) {
+                    const errorPercent = Math.round((this.errorCount / this.scanCount) * 100);
+                    this.errorRate.textContent = `${errorPercent}%`;
+                }
+            }
+
+            clearData() {
+                this.receivedChunks.clear();
+                this.totalExpectedChunks = 0;
+                this.imageMetadata = null;
+                this.transferStartTime = null;
+                this.lastChunkTime = null;
+                this.errorCount = 0;
+                this.scanCount = 0;
+
+                this.previewCanvas.style.display = 'none';
+                this.saveBtn.disabled = true;
+                this.imageInfo.textContent = '';
+
+                this.updateReceiverProgress();
+                this.updateReceiverStatus('データクリア', 'info');
+            }
+
+            updateReceiverStatus(message, type) {
+                this.receiverStatus.textContent = message;
+                this.receiverStatus.className = `status ${type}`;
+            }
+
+            // 送信側メソッド
+            async loadImage() {
+                const file = this.imageFile.files[0];
+                if (!file) {
+                    this.updateSenderStatus('ファイルを選択してください', 'error');
+                    return;
+                }
+
+                if (!file.type.startsWith('image/')) {
+                    this.updateSenderStatus('画像ファイルを選択してください', 'error');
+                    return;
+                }
+
+                try {
+                    this.originalImage.src = URL.createObjectURL(file);
+                    this.originalImage.style.display = 'block';
+                    this.originalImage.onload = () => {
+                        this.processBtn.disabled = false;
+                        this.updateSenderStatus('画像読み込み完了', 'success');
+                    };
+                } catch (error) {
+                    this.updateSenderStatus('読み込みエラー: ' + error.message, 'error');
+                }
+            }
+
+            updateQualityDisplay() {
+                this.qualityValue.textContent = this.qualitySlider.value + '%';
+            }
+
+            async processImage() {
+                if (!this.originalImage.src) return;
+
+                try {
+                    // キャンバスに画像を描画
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    canvas.width = this.originalImage.naturalWidth;
+                    canvas.height = this.originalImage.naturalHeight;
+                    ctx.drawImage(this.originalImage, 0, 0);
+
+                    // 品質に応じて圧縮
+                    const quality = parseInt(this.qualitySlider.value) / 100;
+                    const dataURL = canvas.toBlob ? 
+                        await this.canvasToDataURL(canvas, quality) : 
+                        canvas.toDataURL('image/jpeg', quality);
+
+                    // BASE64データを抽出
+                    const base64Data = dataURL.split(',')[1];
+                    this.originalImageData = base64Data;
+
+                    // メタデータ設定
+                    this.imageMetadata = {
+                        width: canvas.width,
+                        height: canvas.height,
+                        format: 'jpeg'
+                    };
+
+                    // チャンクに分割
+                    this.createChunks();
+
+                } catch (error) {
+                    this.updateSenderStatus('画像処理エラー: ' + error.message, 'error');
+                }
+            }
+
+            async canvasToDataURL(canvas, quality) {
+                return new Promise((resolve) => {
+                    canvas.toBlob((blob) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result);
+                        reader.readAsDataURL(blob);
+                    }, 'image/jpeg', quality);
+                });
+            }
+
+            createChunks() {
+                const chunkSizeValue = parseInt(this.chunkSize.value);
+                this.qrChunks = [];
+
+                const totalChunks = Math.ceil(this.originalImageData.length / chunkSizeValue);
+
+                for (let i = 0; i < totalChunks; i++) {
+                    const start = i * chunkSizeValue;
+                    const end = Math.min(start + chunkSizeValue, this.originalImageData.length);
+                    const chunkData = this.originalImageData.substring(start, end);
+
+                    const chunk = {
+                        index: i,
+                        total: totalChunks,
+                        data: chunkData
+                    };
+
+                    // 最初のチャンクにメタデータを含める
+                    if (i === 0) {
+                        chunk.width = this.imageMetadata.width;
+                        chunk.height = this.imageMetadata.height;
+                        chunk.format = this.imageMetadata.format;
+                    }
+
+                    const qrData = 'IMG:' + JSON.stringify(chunk);
+                    this.qrChunks.push(qrData);
+                }
+
+                // 統計更新
+                this.totalChunks.textContent = totalChunks;
+                this.compressedSize.textContent = `${Math.round(this.originalImageData.length / 1024)} KB`;
+                
+                const fps = parseInt(this.flashFPS.value);
+                const estimatedSeconds = Math.round(totalChunks / fps);
+                this.estimatedTime.textContent = `${estimatedSeconds}秒`;
+
+                this.flashBtn.disabled = false;
+                this.currentChunkIndex = 0;
+                this.updateSenderStatus(`${totalChunks}個のQRコード生成完了`, 'success');
+
+                // 最初のQRコードを表示
+                if (this.qrChunks.length > 0) {
+                    this.displayQRCode(this.qrChunks[0], 0);
+                }
+            }
+
+            displayQRCode(data, index) {
+                try {
+                    const qr = new QRious({
+                        element: this.qrCanvas,
+                        value: data,
+                        size: 350,
+                        background: 'white',
+                        foreground: 'black',
+                        level: 'L' // エラー訂正レベルを下げて容量を最大化
+                    });
+
+                    this.qrInfo.textContent = `チャンク ${index + 1} (${data.length} 文字)`;
+                } catch (error) {
+                    this.updateSenderStatus('QRコード生成エラー: ' + error.message, 'error');
+                }
+            }
+
+            startFlashing() {
+                if (this.qrChunks.length === 0) return;
+
+                const fps = parseInt(this.flashFPS.value);
+                const interval = 1000 / fps;
+
+                this.flashInterval = setInterval(() => {
+                    this.displayQRCode(this.qrChunks[this.currentChunkIndex], this.currentChunkIndex);
+                    this.updateSendProgress();
+                    this.currentChunkIndex = (this.currentChunkIndex + 1) % this.qrChunks.length;
+                }, interval);
+
+                this.flashBtn.disabled = true;
+                this.stopFlashBtn.disabled = false;
+                this.updateSenderStatus(`${fps}FPSで送信中...`, 'warning');
+            }
+
+            stopFlashing() {
+                if (this.flashInterval) {
+                    clearInterval(this.flashInterval);
+                    this.flashInterval = null;
+                }
+                this.flashBtn.disabled = false;
+                this.stopFlashBtn.disabled = true;
+                this.updateSenderStatus('送信停止', 'info');
+            }
+
+            updateSendProgress() {
+                const percentage = Math.round(((this.currentChunkIndex + 1) / this.qrChunks.length) * 100);
+                this.sendProgress.style.width = `${percentage}%`;
+                this.sendProgress.textContent = `${percentage}%`;
+                this.currentChunk.textContent = `${this.currentChunkIndex + 1} / ${this.qrChunks.length}`;
+            }
+
+            updateSenderStatus(message, type) {
+                this.senderStatus.textContent = message;
+                this.senderStatus.className = `status ${type}`;
+            }
+        }
+
+        // アプリケーション初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            new ImageQRStreaming();
+        });
+    </script>
+</body>
+
+</html>
