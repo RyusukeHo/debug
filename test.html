@@ -485,7 +485,7 @@
                 return note + octave;
             }
 
-            // 大チャンク作成（小さなグループも処理）
+            // 大チャンク作成（任意の位置から再生可能）
             createBigChunks() {
                 const bigChunkSize = parseInt(this.bigChunkSize.value);
                 const sortedIndices = Array.from(this.receivedChunks.keys()).sort((a, b) => a - b);
@@ -542,10 +542,16 @@
                 // 新しい大チャンクの音符をキューに追加
                 this.addBigChunkToQueue(bigChunk);
 
-                // 最初の大チャンクが完成したら再生開始
-                if (this.bigChunks.size === 1 && !this.isPlaying) {
+                // 再生が開始されていない場合、条件を満たせば開始
+                if (!this.isPlaying && this.shouldStartPlayback()) {
                     setTimeout(() => this.startPlayback(), 100);
                 }
+            }
+
+            // 再生開始条件の判定（任意の位置から開始可能）
+            shouldStartPlayback() {
+                // 大チャンクが1つ以上あり、音符キューにデータがあれば再生開始
+                return this.bigChunks.size >= 1 && this.noteQueue.length > 0;
             }
 
             // 大チャンクの音符をキューに追加（時間ベース進捗対応）
@@ -641,7 +647,7 @@
                 }
             }
 
-            // キューイング再生開始
+            // キューイング再生開始（任意の位置から開始対応）
             async startPlayback() {
                 if (this.isPlaying || this.noteQueue.length === 0) return;
 
@@ -653,12 +659,22 @@
                     }
                 }
 
+                // 最初に受信した音符の時刻を基準点として設定
+                const firstNoteTime = this.noteQueue[0].time;
+
                 this.isPlaying = true;
                 this.stopPlayBtn.disabled = false;
                 this.playbackStartTime = Date.now();
-                this.currentPlaybackTime = 0;
 
-                this.updateReceiverStatus('再生中...', 'playing');
+                // 再生開始時刻を最初の音符時刻に合わせる
+                this.playbackOffset = firstNoteTime;
+                this.currentPlaybackTime = firstNoteTime;
+
+                if (this.debugMode.checked) {
+                    console.log(`再生開始: 基準時刻 ${firstNoteTime.toFixed(3)}s から開始`);
+                }
+
+                this.updateReceiverStatus(`再生中... (${firstNoteTime.toFixed(1)}s〜)`, 'playing');
                 this.startQueueProcessor();
             }
 
