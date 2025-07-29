@@ -8,7 +8,7 @@
     <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
     <script src="https://unpkg.com/qrious@4.0.2/dist/qrious.min.js"></script>
     <script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
-
+    <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -191,6 +191,10 @@
                     <input type="checkbox" id="debugMode">
                     デバッグ
                 </label>
+                <label>
+                    <input type="checkbox" id="highQualityMode">
+                    高音質モード (64音)
+                </label>
             </div>
 
             <div id="receiverStatus" class="status info">カメラを開始してください</div>
@@ -252,9 +256,7 @@
                 this.receivedChunks = new Map();
                 this.bigChunks = new Map();
                 this.isPlaying = false;
-                this.audioContext = null;
-                this.masterGain = null;
-                this.activeNotes = null;
+                this.synth = null;
                 this.playbackStartTime = null;
                 this.currentPlaybackTime = 0;
 
@@ -286,6 +288,7 @@
                 this.clearBtn = document.getElementById('clearBtn');
                 this.stopPlayBtn = document.getElementById('stopPlayBtn');
                 this.debugMode = document.getElementById('debugMode');
+                this.highQualityMode = document.getElementById('highQualityMode');
                 this.bigChunkSize = document.getElementById('bigChunkSize');
                 this.receiverStatus = document.getElementById('receiverStatus');
                 this.receivedProgress = document.getElementById('receivedProgress');
@@ -310,6 +313,7 @@
                 this.stopBtn.addEventListener('click', () => this.stopCamera());
                 this.clearBtn.addEventListener('click', () => this.clearData());
                 this.stopPlayBtn.addEventListener('click', () => this.stopMidi());
+                this.highQualityMode.addEventListener('change', () => this.onQualityModeChange());
 
                 // 送信側
                 this.loadMidiBtn.addEventListener('click', () => this.loadMidiFile());
@@ -320,23 +324,37 @@
 
             async initializeAudio() {
                 try {
-                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    await Tone.start();
 
-                    // マスターボリューム
-                    this.masterGain = this.audioContext.createGain();
-                    this.masterGain.gain.value = 0.3; // 30%の音量
-                    this.masterGain.connect(this.audioContext.destination);
+                    // 音質モードに応じて同時発音数を決定
+                    const maxPolyphony = this.highQualityMode.checked ? 64 : 45;
 
-                    // アクティブな音符を管理
-                    this.activeNotes = new Map();
+                    // マスターボリュームコントロールを追加
+                    // これは「総音量の調整器」として機能します
+                    this.masterVolume = new Tone.Volume(-12); // -12dB（約1/4の音量）
+
+                    // 基本的なシンセサイザーにボリューム制御を追加
+                    this.synth = new Tone.PolySynth({
+                        maxPolyphony: maxPolyphony, // 動的に設定
+                        voice: Tone.Synth,
+                        options: {
+                            envelope: {
+                                attack: 0.005,  // 少し自然な立ち上がりに
+                                release: 0.3    // 少し自然な減衰に
+                            }
+                        }
+                    }).connect(this.masterVolume).toDestination();
 
                     if (this.debugMode.checked) {
-                        console.log('Web Audio API初期化完了 - 軽量シンセサイザー');
+                        console.log(`安定化オーディオシステム初期化完了 - ${maxPolyphony}音ポリフォニー, -12dBマスター音量`);
                     }
                     return true;
                 } catch (error) {
                     console.error('Audio init failed:', error);
-                    return false;
+                    // フォールバック：最もシンプルな構成
+                    this.synth = new Tone.MonoSynth().toDestination();
+                    console.log('フォールバック：モノフォニックシンセサイザーで初期化');
+                    return true;
                 }
             }
 
@@ -636,17 +654,12 @@
             async startPlayback() {
                 if (this.isPlaying || this.noteQueue.length === 0) return;
 
-                if (!this.audioContext) {
+                if (!this.synth) {
                     const success = await this.initializeAudio();
                     if (!success) {
                         this.updateReceiverStatus('オーディオ初期化失敗', 'error');
                         return;
                     }
-                }
-
-                // オーディオコンテキストを再開（ブラウザのAutoplay制限対応）
-                if (this.audioContext.state === 'suspended') {
-                    await this.audioContext.resume();
                 }
 
                 this.isPlaying = true;
@@ -685,13 +698,17 @@
                             // 音符を再生するタイミングを計算
                             const playDelay = Math.max(0, noteToPlay.time - this.currentPlaybackTime);
 
+                            // 音量を動的に調整（同時発音数に応じて音量を下げる）
+                            const adjustedVelocity = this.calculateSafeVelocity(noteToPlay.velocity || 0.8);
+
                             try {
-                                // Web Audio APIで音符を再生
-                                this.playNote(
+                                // Tone.jsのスケジューリング機能を使用
+                                // これにより、より正確なタイミングで音符を再生できます
+                                this.synth.triggerAttackRelease(
                                     noteToPlay.pitch,
                                     noteToPlay.duration || 0.5,
-                                    noteToPlay.velocity || 0.8,
-                                    playDelay
+                                    "+" + playDelay.toFixed(3), // 相対的な時間指定
+                                    adjustedVelocity
                                 );
                                 notesPlayed++;
 
@@ -713,7 +730,8 @@
 
                     // パフォーマンス情報の表示（デバッグ時）
                     if (this.debugMode.checked && notesPlayed > 0) {
-                        console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符再生, キュー残り: ${this.noteQueue.length}`);
+                        const activeVoices = this.synth.activeVoices ? this.synth.activeVoices : 'unknown';
+                        console.log(`時刻 ${this.currentPlaybackTime.toFixed(3)}s: ${notesPlayed}音符スケジュール済み, アクティブ音声: ${activeVoices}, キュー残り: ${this.noteQueue.length}`);
                     }
 
                     // 時間情報を更新して進捗表示を正確に保つ
@@ -769,6 +787,36 @@
                 this.playedNotes.splice(0); // 再生履歴もクリア
                 this.updateReceiverStatus('停止', 'info');
                 this.updateProgress();
+            }
+            // 音質モード変更時の処理
+            async onQualityModeChange() {
+                const newMode = this.highQualityMode.checked ? '高音質 (64音)' : '標準 (45音)';
+                this.updateReceiverStatus(`音質モード変更: ${newMode}`, 'info');
+
+                // 再生中の場合は一時停止して再初期化
+                if (this.isPlaying) {
+                    const wasPlaying = true;
+                    this.stopMidi();
+
+                    // シンセを再初期化
+                    if (this.synth) {
+                        this.synth.dispose();
+                        this.synth = null;
+                    }
+
+                    await this.initializeAudio();
+
+                    // 再生を再開
+                    if (wasPlaying && this.noteQueue.length > 0) {
+                        setTimeout(() => this.startPlayback(), 100);
+                    }
+                } else {
+                    // 再生中でない場合は次回再生時に新設定が適用される
+                    if (this.synth) {
+                        this.synth.dispose();
+                        this.synth = null;
+                    }
+                }
             }
 
             updateProgress() {
