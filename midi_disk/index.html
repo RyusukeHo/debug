@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDI disk</title>
+    <style>
+        body {
+            background-color: rgb(42, 43, 71);
+            color: rgb(209, 213, 233);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+
+        .container {
+            position: relative;
+            margin-top: 50px;
+        }
+
+        #diskCanvas {
+            border-radius: 50%;
+        }
+
+        .node-generator {
+            width: 20px;
+            height: 150px;
+            background: rgb(209, 213, 233);
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+    </style>
+</head>
+
+<body>
+    <h1>MIDI disk</h1>
+    <div class="container">
+        <canvas id="diskCanvas" width="400" height="400"></canvas>
+        <div class="node-generator"></div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('diskCanvas');
+        const ctx = canvas.getContext('2d');
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const diskRadius = 200;
+        const holeRadius = 50;
+        const numTracks = 10;
+        const trackWidth = (diskRadius - holeRadius) / numTracks;
+        const rotationSpeed = 0.1;
+        let currentRotation = 0;
+        let latestProcessedArcIndex = -1;
+        let arcs = {};
+        let plannedArc = [];
+
+        function drawDisk() {
+            // 黒い円盤を描画
+            ctx.fillStyle = 'black';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, diskRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 内側の穴を描画
+            ctx.fillStyle = 'rgb(42, 43, 71)';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, holeRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // トラックの境界線を薄く描画（見やすくするため）
+            ctx.strokeStyle = 'rgba(100, 100, 100, 0.3)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= numTracks; i++) {
+                const radius = holeRadius + i * trackWidth;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        function drawArcsOnTrack(arcIndex) {
+            const arcData = arcs[arcIndex];
+            const innerRadius = holeRadius + arcData.track * trackWidth + 2;
+            const outerRadius = holeRadius + (arcData.track + 1) * trackWidth - 2;
+            const midRadius = (innerRadius + outerRadius) / 2;
+
+            const arcLength = arcData.length;
+            const startAngle = arcData.pos;
+            const endAngle = startAngle - arcLength;
+
+
+            // 白い弧を描画
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = trackWidth * 0.8;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, midRadius, endAngle, startAngle);
+            ctx.stroke();
+        }
+
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function animate() {
+            clearCanvas();
+            drawDisk();
+            currentRotation += rotationSpeed;
+            for (let index = latestProcessedArcIndex + 1; index < plannedArc.length; index++) {
+                const element = plannedArc[index];
+                if (element.timing < currentRotation) {
+                    latestProcessedArcIndex = index;
+                    createArc(element.track, Math.PI * (2 + 0.5), element.length);
+                } else {
+                    break;
+                }
+            }
+            for (const arc in arcs) {
+                arcs[arc].pos -= rotationSpeed;
+                arcs[arc].length = Math.min(arcs[arc].pos - Math.PI * 0.5, arcs[arc].length);
+                if (arcs[arc].pos <= Math.PI * 0.5) {
+                    delete arcs[arc];
+                } else {
+                    drawArcsOnTrack(arc);
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+        function createArc(track, pos, length) {
+            arcs[crypto.randomUUID()] = {
+                track: track,
+                pos: pos,
+                length: length
+            };
+        }
+
+        function bitsToPlannedArcMultiLevel(bitString, segments = 50) {
+            const plannedArc = [];
+            const arcLength = (Math.PI * 2 / segments);
+            let bitIndex = 0;
+
+            while (bitIndex < bitString.length) {
+                const timing = Math.PI * 0.5 + (bitIndex / numTracks) * arcLength;
+                for (let t = 0; t < numTracks; t++) {
+                    if (bitIndex >= bitString.length) break;
+
+                    if (bitString[bitIndex] === '1') {
+                        plannedArc.push({
+                            timing: timing,
+                            length: arcLength * 0.9, // 読み取りやすいように少し短くする
+                            track: t
+                        });
+                    }
+                    bitIndex++;
+                }
+            }
+            return plannedArc;
+        }
+
+        function stringToBitString(str) {
+            let bitString = '';
+            for (let i = 0; i < str.length; i++) {
+                const ascii = str.charCodeAt(i);      // 文字をASCIIコードに変換
+                const bits = ascii.toString(2).padStart(8, '0'); // 8ビットの2進数文字列に
+                bitString += bits;
+            }
+            return bitString;
+        }
+
+        plannedArc = bitsToPlannedArcMultiLevel(stringToBitString("Nice to meet you. I am hosoda ryusuke. call me hosoda."));
+
+        animate();
+    </script>
+</body>
+
+</html>

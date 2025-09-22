@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDI Disk Scanner</title>
+    <style>
+        body {
+            background-color: rgb(42, 43, 71);
+            color: rgb(209, 213, 233);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+
+        .scanner-container {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            margin-top: 20px;
+        }
+
+        .disk-container {
+            position: relative;
+        }
+
+        #diskCanvas {
+            border-radius: 50%;
+            border: 2px solid rgb(209, 213, 233);
+        }
+
+        .node-generator {
+            width: 20px;
+            height: 150px;
+            background: rgb(209, 213, 233);
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        .camera-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #videoElement {
+            width: 320px;
+            height: 240px;
+            border: 2px solid rgb(209, 213, 233);
+            border-radius: 8px;
+        }
+
+        #processedCanvas {
+            width: 100px;
+            height: 300px;
+            border: 2px solid rgb(209, 213, 233);
+            border-radius: 8px;
+        }
+
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 200px;
+        }
+
+        button {
+            padding: 10px;
+            background-color: rgb(100, 116, 139);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: rgb(71, 85, 105);
+        }
+
+        button:disabled {
+            background-color: rgb(64, 64, 64);
+            cursor: not-allowed;
+        }
+
+        .data-display {
+            background-color: rgb(30, 30, 50);
+            padding: 15px;
+            border-radius: 8px;
+            max-width: 400px;
+            margin-top: 20px;
+        }
+
+        .bit-stream {
+            font-family: monospace;
+            font-size: 12px;
+            word-break: break-all;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: rgb(20, 20, 40);
+            border-radius: 4px;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+
+        .decoded-text {
+            font-size: 16px;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: rgb(50, 70, 90);
+            border-radius: 4px;
+            min-height: 50px;
+        }
+
+        .status {
+            margin: 10px 0;
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        .status.scanning {
+            background-color: rgba(34, 197, 94, 0.2);
+            border: 1px solid rgb(34, 197, 94);
+        }
+
+        .status.error {
+            background-color: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgb(239, 68, 68);
+        }
+
+        .slider-container {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+        }
+
+        .scan-area-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 4px;
+            height: 300px;
+            background: rgba(255, 0, 0, 0.5);
+            pointer-events: none;
+            z-index: 10;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>MIDI Disk Camera Scanner</h1>
+
+    <div class="scanner-container">
+        <!-- Original Disk Display -->
+        <div class="disk-container">
+            <h3>Original Disk</h3>
+            <canvas id="diskCanvas" width="400" height="400"></canvas>
+            <div class="node-generator"></div>
+        </div>
+
+        <!-- Camera Feed -->
+        <div class="camera-container">
+            <h3>Camera Feed</h3>
+            <div style="position: relative;">
+                <video id="videoElement" autoplay muted playsinline></video>
+                <div class="scan-area-overlay"></div>
+            </div>
+            <canvas id="processedCanvas" width="100" height="300"></canvas>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <h3>Controls</h3>
+            <button id="startCamera">Start Camera</button>
+            <button id="startScanning" disabled>Start Scanning</button>
+            <button id="stopScanning" disabled>Stop Scanning</button>
+            <button id="resetData">Reset Data</button>
+
+            <div class="slider-container">
+                <label>Threshold: <span id="thresholdValue">128</span></label>
+                <input type="range" id="threshold" min="50" max="200" value="128">
+            </div>
+
+            <div class="slider-container">
+                <label>Scan Width: <span id="scanWidthValue">4</span></label>
+                <input type="range" id="scanWidth" min="2" max="10" value="4">
+            </div>
+        </div>
+    </div>
+
+    <!-- Data Display -->
+    <div class="data-display">
+        <h3>Scanned Data</h3>
+        <div id="status" class="status">Ready to scan</div>
+        <div>
+            <strong>Bit Stream:</strong>
+            <div id="bitStream" class="bit-stream"></div>
+        </div>
+        <div>
+            <strong>Decoded Text:</strong>
+            <div id="decodedText" class="decoded-text"></div>
+        </div>
+    </div>
+
+    <script>
+        // Original disk animation
+        const canvas = document.getElementById('diskCanvas');
+        const ctx = canvas.getContext('2d');
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const diskRadius = 200;
+        const holeRadius = 50;
+        const numTracks = 10;
+        const trackWidth = (diskRadius - holeRadius) / numTracks;
+        const rotationSpeed = 0.02; // Slower for easier scanning
+        let currentRotation = 0;
+        let latestProcessedArcIndex = -1;
+        let arcs = {};
+        let plannedArc = [];
+
+        // Camera scanning variables
+        let videoElement = document.getElementById('videoElement');
+        let processedCanvas = document.getElementById('processedCanvas');
+        let processedCtx = processedCanvas.getContext('2d');
+        let isScanning = false;
+        let scanningInterval;
+        let scannedBits = '';
+        let lastScanTime = 0;
+        let referenceAngle = 0;
+        let diskCenter = null;
+
+        // UI elements
+        const startCameraBtn = document.getElementById('startCamera');
+        const startScanningBtn = document.getElementById('startScanning');
+        const stopScanningBtn = document.getElementById('stopScanning');
+        const resetDataBtn = document.getElementById('resetData');
+        const thresholdSlider = document.getElementById('threshold');
+        const scanWidthSlider = document.getElementById('scanWidth');
+        const statusDiv = document.getElementById('status');
+        const bitStreamDiv = document.getElementById('bitStream');
+        const decodedTextDiv = document.getElementById('decodedText');
+
+        function drawDisk() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Black disk
+            ctx.fillStyle = 'black';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, diskRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Inner hole
+            ctx.fillStyle = 'rgb(42, 43, 71)';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, holeRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Reference marker (red line)
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.lineTo(centerX, centerY - diskRadius);
+            ctx.stroke();
+
+            // Track boundaries
+            ctx.strokeStyle = 'rgba(100, 100, 100, 0.3)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= numTracks; i++) {
+                const radius = holeRadius + i * trackWidth;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // Draw arcs
+            for (const arc in arcs) {
+                drawArcsOnTrack(arc);
+            }
+        }
+
+        function drawArcsOnTrack(arcIndex) {
+            const arcData = arcs[arcIndex];
+            const innerRadius = holeRadius + arcData.track * trackWidth + 2;
+            const outerRadius = holeRadius + (arcData.track + 1) * trackWidth - 2;
+            const midRadius = (innerRadius + outerRadius) / 2;
+
+            const arcLength = arcData.length;
+            const startAngle = arcData.pos + currentRotation;
+            const endAngle = startAngle - arcLength;
+
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = trackWidth * 0.8;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, midRadius, endAngle, startAngle);
+            ctx.stroke();
+        }
+
+        function animate() {
+            currentRotation += rotationSpeed;
+
+            // Process new arcs
+            for (let index = latestProcessedArcIndex + 1; index < plannedArc.length; index++) {
+                const element = plannedArc[index];
+                if (element.timing < currentRotation) {
+                    latestProcessedArcIndex = index;
+                    createArc(element.track, element.pos, element.length);
+                } else {
+                    break;
+                }
+            }
+
+            // Clean up old arcs
+            for (const arc in arcs) {
+                if (arcs[arc].pos + currentRotation < -Math.PI * 0.1) {
+                    delete arcs[arc];
+                }
+            }
+
+            drawDisk();
+            requestAnimationFrame(animate);
+        }
+
+        function createArc(track, pos, length) {
+            arcs[crypto.randomUUID()] = {
+                track: track,
+                pos: pos,
+                length: length
+            };
+        }
+
+        function bitsToPlannedArc(bitString) {
+            const plannedArc = [];
+            const segmentAngle = (Math.PI * 2) / (bitString.length / numTracks);
+            let bitIndex = 0;
+
+            while (bitIndex < bitString.length) {
+                const segmentIndex = Math.floor(bitIndex / numTracks);
+                const baseAngle = segmentIndex * segmentAngle;
+
+                for (let t = 0; t < numTracks; t++) {
+                    if (bitIndex >= bitString.length) break;
+
+                    if (bitString[bitIndex] === '1') {
+                        plannedArc.push({
+                            timing: baseAngle,
+                            pos: baseAngle,
+                            length: segmentAngle * 0.8,
+                            track: t
+                        });
+                    }
+                    bitIndex++;
+                }
+            }
+            return plannedArc;
+        }
+
+        function stringToBitString(str) {
+            let bitString = '';
+            for (let i = 0; i < str.length; i++) {
+                const ascii = str.charCodeAt(i);
+                const bits = ascii.toString(2).padStart(8, '0');
+                bitString += bits;
+            }
+            return bitString;
+        }
+
+        // Camera functions
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: 'environment'
+                    }
+                });
+                videoElement.srcObject = stream;
+                startCameraBtn.disabled = true;
+                startScanningBtn.disabled = false;
+                updateStatus('Camera started', 'scanning');
+            } catch (err) {
+                updateStatus('Camera access denied: ' + err.message, 'error');
+            }
+        }
+
+        function detectDiskCenter() {
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = videoElement.videoWidth;
+            tempCanvas.height = videoElement.videoHeight;
+
+            tempCtx.drawImage(videoElement, 0, 0);
+            const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+
+            // Simple center detection - look for circular patterns
+            // This is a simplified version - in practice you'd use more sophisticated detection
+            return {
+                x: tempCanvas.width / 2,
+                y: tempCanvas.height / 2,
+                radius: Math.min(tempCanvas.width, tempCanvas.height) / 4
+            };
+        }
+
+        function scanDiskData() {
+            if (!videoElement.videoWidth) return;
+
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = videoElement.videoWidth;
+            tempCanvas.height = videoElement.videoHeight;
+
+            tempCtx.drawImage(videoElement, 0, 0);
+
+            if (!diskCenter) {
+                diskCenter = detectDiskCenter();
+            }
+
+            const scanWidth = parseInt(scanWidthSlider.value);
+            const threshold = parseInt(thresholdSlider.value);
+
+            // Extract vertical scan line from center outward
+            const scanData = [];
+            const startRadius = 20; // Skip center hole
+            const maxRadius = diskCenter.radius;
+            const numSamples = numTracks;
+
+            processedCtx.clearRect(0, 0, processedCanvas.width, processedCanvas.height);
+
+            for (let i = 0; i < numSamples; i++) {
+                const radius = startRadius + (i / numSamples) * (maxRadius - startRadius);
+                const x = Math.floor(diskCenter.x);
+                const y = Math.floor(diskCenter.y - radius);
+
+                if (x >= 0 && x < tempCanvas.width && y >= 0 && y < tempCanvas.height) {
+                    let totalBrightness = 0;
+                    let sampleCount = 0;
+
+                    // Sample area around the point
+                    for (let dx = -scanWidth; dx <= scanWidth; dx++) {
+                        for (let dy = -2; dy <= 2; dy++) {
+                            const sampleX = x + dx;
+                            const sampleY = y + dy;
+                            if (sampleX >= 0 && sampleX < tempCanvas.width &&
+                                sampleY >= 0 && sampleY < tempCanvas.height) {
+                                const pixel = tempCtx.getImageData(sampleX, sampleY, 1, 1).data;
+                                const brightness = (pixel[0] + pixel[1] + pixel[2]) / 3;
+                                totalBrightness += brightness;
+                                sampleCount++;
+                            }
+                        }
+                    }
+
+                    const avgBrightness = totalBrightness / sampleCount;
+                    const bit = avgBrightness > threshold ? '1' : '0';
+                    scanData.push(bit);
+
+                    // Draw visualization
+                    const visualY = (i / numSamples) * processedCanvas.height;
+                    processedCtx.fillStyle = avgBrightness > threshold ? 'white' : 'black';
+                    processedCtx.fillRect(0, visualY, processedCanvas.width, processedCanvas.height / numSamples);
+
+                    // Draw brightness level
+                    processedCtx.fillStyle = 'red';
+                    const barWidth = (avgBrightness / 255) * processedCanvas.width;
+                    processedCtx.fillRect(0, visualY, barWidth, 2);
+                }
+            }
+
+            // Add scanned bits if enough time has passed
+            const currentTime = Date.now();
+            if (currentTime - lastScanTime > 100) { // 100ms interval
+                const newBits = scanData.join('');
+                scannedBits += newBits;
+                lastScanTime = currentTime;
+                updateDisplay();
+            }
+        }
+
+        function updateDisplay() {
+            bitStreamDiv.textContent = scannedBits.slice(-400); // Show last 400 bits
+
+            // Try to decode as ASCII
+            let decodedText = '';
+            for (let i = 0; i < scannedBits.length - 7; i += 8) {
+                const byte = scannedBits.substr(i, 8);
+                if (byte.length === 8) {
+                    const charCode = parseInt(byte, 2);
+                    if (charCode >= 32 && charCode <= 126) { // Printable ASCII
+                        decodedText += String.fromCharCode(charCode);
+                    } else {
+                        decodedText += '?';
+                    }
+                }
+            }
+            decodedTextDiv.textContent = decodedText.slice(-50); // Show last 50 characters
+        }
+
+        function startScanning() {
+            if (!isScanning) {
+                isScanning = true;
+                scanningInterval = setInterval(scanDiskData, 50); // 20 FPS
+                startScanningBtn.disabled = true;
+                stopScanningBtn.disabled = false;
+                updateStatus('Scanning...', 'scanning');
+            }
+        }
+
+        function stopScanning() {
+            if (isScanning) {
+                isScanning = false;
+                clearInterval(scanningInterval);
+                startScanningBtn.disabled = false;
+                stopScanningBtn.disabled = true;
+                updateStatus('Scanning stopped', '');
+            }
+        }
+
+        function resetData() {
+            scannedBits = '';
+            bitStreamDiv.textContent = '';
+            decodedTextDiv.textContent = '';
+            diskCenter = null;
+            updateStatus('Data reset', '');
+        }
+
+        function updateStatus(message, className) {
+            statusDiv.textContent = message;
+            statusDiv.className = 'status ' + className;
+        }
+
+        // Event listeners
+        startCameraBtn.addEventListener('click', startCamera);
+        startScanningBtn.addEventListener('click', startScanning);
+        stopScanningBtn.addEventListener('click', stopScanning);
+        resetDataBtn.addEventListener('click', resetData);
+
+        thresholdSlider.addEventListener('input', (e) => {
+            document.getElementById('thresholdValue').textContent = e.target.value;
+        });
+
+        scanWidthSlider.addEventListener('input', (e) => {
+            document.getElementById('scanWidthValue').textContent = e.target.value;
+        });
+
+        // Initialize original disk
+        plannedArc = bitsToPlannedArc(stringToBitString("Nice to meet you. I am hosoda ryusuke. call me hosoda."));
+        animate();
+    </script>
+</body>
+
+</html>
