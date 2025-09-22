@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyomon Circular Music</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #000;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        
+        .container {
+            display: flex;
+            justify-content: space-between;
+            height: 100vh;
+        }
+        
+        .pc-side {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-right: 2px solid #333;
+            padding-right: 20px;
+        }
+        
+        .mobile-side {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-left: 20px;
+        }
+        
+        .disk-container {
+            position: relative;
+            width: 300px;
+            height: 300px;
+        }
+        
+        .disk {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: conic-gradient(
+                from 0deg,
+                #ff0000, #ff4500, #ffa500, #ffff00,
+                #adff2f, #00ff00, #00ffff, #0080ff,
+                #0000ff, #8000ff, #ff00ff, #ff0080,
+                #ff0000
+            );
+            animation: rotate 4s linear infinite;
+            position: relative;
+            box-shadow: 0 0 30px rgba(255, 255, 255, 0.3);
+        }
+        
+        .disk::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 60px;
+            height: 60px;
+            background: #000;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        
+        .disk-patterns {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: repeating-conic-gradient(
+                from 0deg,
+                transparent 0deg,
+                rgba(255, 255, 255, 0.1) 2deg,
+                transparent 4deg
+            );
+        }
+        
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        .controls {
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        button {
+            background: #333;
+            color: #fff;
+            border: 1px solid #666;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        button:hover {
+            background: #555;
+        }
+        
+        .camera-container {
+            width: 320px;
+            height: 240px;
+            background: #111;
+            border: 2px solid #333;
+            position: relative;
+            margin-bottom: 20px;
+        }
+        
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        canvas {
+            display: none;
+        }
+        
+        .detection-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        .circle-detected {
+            position: absolute;
+            border: 3px solid #00ff00;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            background: #222;
+            border-radius: 3px;
+            min-height: 60px;
+        }
+        
+        .frequency-display {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 10px;
+        }
+        
+        .freq-bar {
+            width: 8px;
+            background: #333;
+            margin: 0 1px;
+            transition: height 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="pc-side">
+            <h2>💿 Hyomon Disk Player</h2>
+            <div class="disk-container">
+                <div class="disk" id="musicDisk">
+                    <div class="disk-patterns"></div>
+                </div>
+            </div>
+            <div class="controls">
+                <button onclick="generateNewPattern()">新しい音楽パターン</button>
+                <button onclick="togglePlayback()">再生/停止</button>
+            </div>
+            <div class="status">
+                <div>現在の周波数: <span id="currentFreq">440Hz</span></div>
+                <div>パターン: <span id="currentPattern">Rainbow</span></div>
+                <div class="frequency-display" id="freqDisplay"></div>
+            </div>
+        </div>
+        
+        <div class="mobile-side">
+            <h2>📱 スマホカメラ</h2>
+            <div class="camera-container">
+                <video id="video" autoplay muted></video>
+                <canvas id="canvas" width="320" height="240"></canvas>
+                <div class="detection-overlay" id="overlay"></div>
+            </div>
+            <div class="controls">
+                <button onclick="startCamera()">カメラ開始</button>
+                <button onclick="stopCamera()">カメラ停止</button>
+            </div>
+            <div class="status">
+                <div>検出状況: <span id="detectionStatus">待機中</span></div>
+                <div>円の位置: <span id="circlePos">-</span></div>
+                <div>読み取りデータ: <span id="readData">-</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Audio Context
+        let audioContext = null;
+        let oscillators = [];
+        let isPlaying = false;
+        let currentPattern = 'rainbow';
+        let stream = null;
+        let detectionInterval = null;
+
+        // Initialize Audio
+        const initAudio = () => {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        };
+
+        // Generate musical pattern from visual data
+        const generateFrequencies = (colorData) => {
+            const baseFreq = 220; // A3
+            const frequencies = [];
+            
+            for (let i = 0; i < colorData.length; i += 4) {
+                const r = colorData[i];
+                const g = colorData[i + 1];
+                const b = colorData[i + 2];
+                
+                // Convert RGB to frequency
+                const intensity = (r + g + b) / 3 / 255;
+                const freq = baseFreq * (1 + intensity * 2);
+                frequencies.push(freq);
+            }
+            
+            return frequencies;
+        };
+
+        // Play sound from frequencies
+        const playFrequencies = (frequencies) => {
+            stopSound();
+            if (!audioContext) return;
+
+            frequencies.slice(0, 8).forEach((freq, index) => {
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.frequency.setValueAtTime(freq, audioContext.currentTime);
+                oscillator.type = 'sine';
+                
+                gainNode.gain.setValueAtTime(0.1 / frequencies.length, audioContext.currentTime);
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.start();
+                oscillator.stop(audioContext.currentTime + 0.5);
+                
+                oscillators.push(oscillator);
+            });
+
+            // Update frequency display
+            updateFrequencyDisplay(frequencies.slice(0, 16));
+        };
+
+        const stopSound = () => {
+            oscillators.forEach(osc => {
+                try { osc.stop(); } catch (e) {}
+            });
+            oscillators = [];
+        };
+
+        // Update frequency visualization
+        const updateFrequencyDisplay = (frequencies) => {
+            const display = document.getElementById('freqDisplay');
+            display.innerHTML = '';
+            
+            frequencies.forEach(freq => {
+                const bar = document.createElement('div');
+                bar.className = 'freq-bar';
+                const height = (freq - 200) / 10;
+                bar.style.height = `${Math.max(5, Math.min(50, height))}px`;
+                bar.style.backgroundColor = `hsl(${freq / 10}, 70%, 50%)`;
+                display.appendChild(bar);
+            });
+            
+            document.getElementById('currentFreq').textContent = 
+                `${frequencies[0]?.toFixed(0) || 0}Hz (avg)`;
+        };
+
+        // Camera functions
+        const startCamera = async () => {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } 
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+                
+                document.getElementById('detectionStatus').textContent = 'カメラ起動中...';
+                
+                video.addEventListener('loadedmetadata', () => {
+                    startDetection();
+                });
+                
+            } catch (err) {
+                console.error('Camera error:', err);
+                document.getElementById('detectionStatus').textContent = 'カメラエラー';
+            }
+        };
+
+        const stopCamera = () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            if (detectionInterval) {
+                clearInterval(detectionInterval);
+                detectionInterval = null;
+            }
+            
+            document.getElementById('detectionStatus').textContent = '停止';
+        };
+
+        // Circular pattern detection
+        const startDetection = () => {
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            detectionInterval = setInterval(() => {
+                if (video.videoWidth === 0) return;
+                
+                // Draw video frame to canvas
+                ctx.drawImage(video, 0, 0, 320, 240);
+                const imageData = ctx.getImageData(0, 0, 320, 240);
+                
+                // Simple circle detection (center area)
+                const centerX = 160;
+                const centerY = 120;
+                const radius = 60;
+                
+                const circularData = extractCircularData(imageData.data, centerX, centerY, radius);
+                
+                if (circularData.length > 0) {
+                    document.getElementById('detectionStatus').textContent = '円形パターン検出！';
+                    document.getElementById('circlePos').textContent = `(${centerX}, ${centerY})`;
+                    
+                    // Show detection overlay
+                    showDetectionOverlay(centerX, centerY, radius);
+                    
+                    // Convert to frequencies and play
+                    const frequencies = generateFrequencies(circularData);
+                    playFrequencies(frequencies);
+                    
+                    document.getElementById('readData').textContent = 
+                        `${circularData.length}ピクセル解析`;
+                } else {
+                    document.getElementById('detectionStatus').textContent = '検索中...';
+                }
+            }, 200);
+        };
+
+        const extractCircularData = (imageData, centerX, centerY, radius) => {
+            const circularPixels = [];
+            
+            // Sample pixels in circular pattern
+            for (let angle = 0; angle < 360; angle += 10) {
+                for (let r = 20; r < radius; r += 10) {
+                    const x = Math.floor(centerX + r * Math.cos(angle * Math.PI / 180));
+                    const y = Math.floor(centerY + r * Math.sin(angle * Math.PI / 180));
+                    
+                    if (x >= 0 && x < 320 && y >= 0 && y < 240) {
+                        const index = (y * 320 + x) * 4;
+                        circularPixels.push(
+                            imageData[index],     // R
+                            imageData[index + 1], // G
+                            imageData[index + 2], // B
+                            imageData[index + 3]  // A
+                        );
+                    }
+                }
+            }
+            
+            return circularPixels;
+        };
+
+        const showDetectionOverlay = (x, y, radius) => {
+            const overlay = document.getElementById('overlay');
+            overlay.innerHTML = '';
+            
+            const circle = document.createElement('div');
+            circle.className = 'circle-detected';
+            circle.style.left = `${x / 320 * 100}%`;
+            circle.style.top = `${y / 240 * 100}%`;
+            circle.style.width = `${radius * 2 / 320 * 100}%`;
+            circle.style.height = `${radius * 2 / 240 * 100}%`;
+            
+            overlay.appendChild(circle);
+        };
+
+        // Disk controls
+        const generateNewPattern = () => {
+            const patterns = ['rainbow', 'pulse', 'spiral', 'random'];
+            currentPattern = patterns[Math.floor(Math.random() * patterns.length)];
+            
+            const disk = document.getElementById('musicDisk');
+            
+            switch (currentPattern) {
+                case 'pulse':
+                    disk.style.background = `radial-gradient(circle, #ff0000, #000000, #00ff00, #000000, #0000ff)`;
+                    break;
+                case 'spiral':
+                    disk.style.background = `conic-gradient(from 0deg, #ff0000 0deg, #000000 45deg, #00ff00 90deg, #000000 135deg, #0000ff 180deg, #000000 225deg, #ffff00 270deg, #000000 315deg, #ff0000 360deg)`;
+                    break;
+                case 'random':
+                    const colors = [];
+                    for (let i = 0; i < 8; i++) {
+                        colors.push(`#${Math.floor(Math.random()*16777215).toString(16)}`);
+                    }
+                    disk.style.background = `conic-gradient(from 0deg, ${colors.join(', ')})`;
+                    break;
+                default:
+                    disk.style.background = `conic-gradient(from 0deg, #ff0000, #ff4500, #ffa500, #ffff00, #adff2f, #00ff00, #00ffff, #0080ff, #0000ff, #8000ff, #ff00ff, #ff0080, #ff0000)`;
+            }
+            
+            document.getElementById('currentPattern').textContent = currentPattern;
+        };
+
+        const togglePlayback = () => {
+            initAudio();
+            
+            if (isPlaying) {
+                stopSound();
+                isPlaying = false;
+            } else {
+                // Play a sample tone based on current pattern
+                const sampleFreqs = [440, 523, 659, 784];
+                playFrequencies(sampleFreqs);
+                isPlaying = true;
+                
+                setTimeout(() => {
+                    isPlaying = false;
+                }, 500);
+            }
+        };
+
+        // Initialize
+        initAudio();
+        generateNewPattern();
+        
+        // Auto-start for demo (remove in production)
+        setTimeout(() => {
+            if (navigator.mediaDevices) {
+                // Uncomment to auto-start camera
+                // startCamera();
+            }
+        }, 1000);
+    </script>
+</body>
+</html>
