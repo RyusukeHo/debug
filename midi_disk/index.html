@@ -4,26 +4,43 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MIDI disk</title>
+    <title>MIDI Disk Scanner - Hyomon Tech</title>
     <style>
         body {
             background-color: rgb(42, 43, 71);
             color: rgb(209, 213, 233);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
             margin: 0;
             padding: 20px;
             font-family: Arial, sans-serif;
         }
 
         .container {
+            display: flex;
+            gap: 30px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .disk-display {
+            flex: 1;
+            min-width: 300px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .scanner {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        .disk-container {
             position: relative;
             margin-top: 50px;
         }
 
         #diskCanvas {
-            border-radius: 50%;
+            border: 2px solid rgb(100, 100, 130);
         }
 
         .node-generator {
@@ -35,53 +52,237 @@
             left: 50%;
             transform: translateX(-50%);
         }
+
+        .controls {
+            margin: 20px 0;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        button {
+            background-color: rgb(72, 73, 101);
+            color: rgb(209, 213, 233);
+            border: 1px solid rgb(100, 100, 130);
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: rgb(92, 93, 121);
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        input,
+        select {
+            background-color: rgb(72, 73, 101);
+            color: rgb(209, 213, 233);
+            border: 1px solid rgb(100, 100, 130);
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        #video {
+            border: 2px solid rgb(100, 100, 130);
+            max-width: 100%;
+            border-radius: 8px;
+        }
+
+        #debugCanvas {
+            border: 2px solid rgb(100, 100, 130);
+            max-width: 100%;
+            margin: 5px 0;
+        }
+
+        .output {
+            background-color: rgb(72, 73, 101);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+
+        .status.success {
+            background-color: rgba(72, 187, 120, 0.3);
+            border: 1px solid rgba(72, 187, 120, 0.5);
+        }
+
+        .status.error {
+            background-color: rgba(245, 101, 101, 0.3);
+            border: 1px solid rgba(245, 101, 101, 0.5);
+        }
+
+        .status.info {
+            background-color: rgba(66, 153, 225, 0.3);
+            border: 1px solid rgba(66, 153, 225, 0.5);
+        }
+
+        .section {
+            background-color: rgba(100, 100, 130, 0.2);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+
+        .debug-info {
+            font-size: 11px;
+            color: rgba(209, 213, 233, 0.7);
+        }
+
+        .scan-point {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #00ff00;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 1000;
+        }
     </style>
 </head>
 
 <body>
-    <h1>MIDI disk</h1>
+    <h1>MIDI Disk Scanner - Hyomon Tech</h1>
+
     <div class="container">
-        <canvas id="diskCanvas" width="400" height="400"></canvas>
-        <div class="node-generator"></div>
+        <!-- Original MIDI Disk Display -->
+        <div class="disk-display">
+            <h2>MIDI Disk</h2>
+            <div class="controls">
+                <input type="text" id="dataInput" placeholder="Enter text to encode" value="Hello Hyomon Tech!">
+                <button onclick="updateDiskData()">Update Data</button>
+                <button onclick="toggleRotation()">Play/Pause</button>
+            </div>
+            <div class="disk-container">
+                <canvas id="diskCanvas" width="400" height="400"></canvas>
+                <div class="node-generator"></div>
+            </div>
+            <div class="output" id="diskInfo"></div>
+        </div>
+
+        <!-- Scanner -->
+        <div class="scanner">
+            <h2>Real-time Scanner</h2>
+            <div class="section">
+                <h3>Camera Controls</h3>
+                <div class="controls">
+                    <button onclick="startCamera()">Start Camera</button>
+                    <button onclick="stopCamera()">Stop Camera</button>
+                    <button onclick="toggleDebugMode()">Toggle Debug</button>
+                    <select id="deviceSelect"></select>
+                </div>
+                <video id="video" width="400" height="300" autoplay muted></video>
+                <canvas id="debugCanvas" width="400" height="400"></canvas>
+                <div class="scan-point" id="scanPoint" style="display: none;"></div>
+                <div id="scanStatus" class="status info">Camera not started</div>
+                <div id="debugInfo" class="debug-info"></div>
+            </div>
+
+            <div class="section">
+                <h3>Scanned Data</h3>
+                <div class="output" id="scannedData">Point camera at the rotating disk to scan...</div>
+            </div>
+        </div>
     </div>
 
     <script>
-        const canvas = document.getElementById('diskCanvas');
-        const ctx = canvas.getContext('2d');
-        const centerX = canvas.width / 2;
-        const centerY = canvas.height / 2;
+        // Global variables
+        let stream = null;
+        let scanInterval = null;
+        let animationId = null;
+        let isRotating = true;
+        let debugMode = true;
+        let scanHistory = [];
+        let lastScanTime = 0;
+
+        const video = document.getElementById('video');
+        const debugCanvas = document.getElementById('debugCanvas');
+        const debugCtx = debugCanvas.getContext('2d');
+
+        // Original MIDI disk parameters
+        const diskCanvas = document.getElementById('diskCanvas');
+        const diskCtx = diskCanvas.getContext('2d');
+        const centerX = diskCanvas.width / 2;
+        const centerY = diskCanvas.height / 2;
         const diskRadius = 200;
         const holeRadius = 50;
         const numTracks = 10;
         const trackWidth = (diskRadius - holeRadius) / numTracks;
-        const rotationSpeed = 0.1;
+        const rotationSpeed = 0.05;
+
         let currentRotation = 0;
         let latestProcessedArcIndex = -1;
         let arcs = {};
         let plannedArc = [];
+        let currentData = "Hello Hyomon Tech!";
+
+        // QRコード風ファインダーパターンの期待座標（ディスク上の相対位置）
+        const expectedFinderPositions = [
+            { x: 0.04, y: 0.04, id: 'TL' },      // Top-left (4% from edges)
+            { x: 0.96, y: 0.04, id: 'TR' },     // Top-right
+            { x: 0.04, y: 0.96, id: 'BL' },     // Bottom-left
+        ];
+
+        function drawFinderPattern(ctx, x, y, size) {
+            // QRコード風の位置決めマーカー
+            const s = size / 2;
+
+            // 外側の白い正方形
+            ctx.fillStyle = 'white';
+            ctx.fillRect(x - s - 1, y - s - 1, size + 2, size + 2);
+
+            // 外側の黒い正方形
+            ctx.fillStyle = 'black';
+            ctx.fillRect(x - s, y - s, size, size);
+
+            // 内側の白い正方形
+            ctx.fillStyle = 'white';
+            ctx.fillRect(x - s + 3, y - s + 3, size - 6, size - 6);
+
+            // 中央の黒い正方形
+            ctx.fillStyle = 'black';
+            const innerSize = size * 0.35;
+            ctx.fillRect(x - innerSize / 2, y - innerSize / 2, innerSize, innerSize);
+        }
 
         function drawDisk() {
             // 黒い円盤を描画
-            ctx.fillStyle = 'black';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, diskRadius, 0, Math.PI * 2);
-            ctx.fill();
+            diskCtx.fillStyle = 'black';
+            diskCtx.beginPath();
+            diskCtx.arc(centerX, centerY, diskRadius, 0, Math.PI * 2);
+            diskCtx.fill();
 
             // 内側の穴を描画
-            ctx.fillStyle = 'rgb(42, 43, 71)';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, holeRadius, 0, Math.PI * 2);
-            ctx.fill();
+            diskCtx.fillStyle = 'rgb(42, 43, 71)';
+            diskCtx.beginPath();
+            diskCtx.arc(centerX, centerY, holeRadius, 0, Math.PI * 2);
+            diskCtx.fill();
 
-            // トラックの境界線を薄く描画（見やすくするため）
-            ctx.strokeStyle = 'rgba(100, 100, 100, 0.3)';
-            ctx.lineWidth = 1;
-            for (let i = 0; i <= numTracks; i++) {
-                const radius = holeRadius + i * trackWidth;
-                ctx.beginPath();
-                ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-                ctx.stroke();
-            }
+            // QRコード風の位置決めマーカー（四隅の固定位置）
+            expectedFinderPositions.forEach(pos => {
+                const x = pos.x * diskCanvas.width;
+                const y = pos.y * diskCanvas.height;
+                drawFinderPattern(diskCtx, x, y, 30);
+            });
         }
 
         function drawArcsOnTrack(arcIndex) {
@@ -94,24 +295,29 @@
             const startAngle = arcData.pos;
             const endAngle = startAngle - arcLength;
 
-
             // 白い弧を描画
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = trackWidth * 0.8;
-            ctx.lineCap = 'butt';
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, midRadius, endAngle, startAngle);
-            ctx.stroke();
+            diskCtx.strokeStyle = 'white';
+            diskCtx.lineWidth = trackWidth * 0.8;
+            diskCtx.lineCap = 'butt';
+            diskCtx.beginPath();
+            diskCtx.arc(centerX, centerY, midRadius, endAngle, startAngle);
+            diskCtx.stroke();
         }
 
         function clearCanvas() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            diskCtx.clearRect(0, 0, diskCanvas.width, diskCanvas.height);
         }
 
         function animate() {
+            if (!isRotating) {
+                animationId = requestAnimationFrame(animate);
+                return;
+            }
+
             clearCanvas();
             drawDisk();
             currentRotation += rotationSpeed;
+
             for (let index = latestProcessedArcIndex + 1; index < plannedArc.length; index++) {
                 const element = plannedArc[index];
                 if (element.timing < currentRotation) {
@@ -121,6 +327,7 @@
                     break;
                 }
             }
+
             for (const arc in arcs) {
                 arcs[arc].pos -= rotationSpeed;
                 arcs[arc].length = Math.min(arcs[arc].pos - Math.PI * 0.5, arcs[arc].length);
@@ -130,8 +337,15 @@
                     drawArcsOnTrack(arc);
                 }
             }
-            requestAnimationFrame(animate);
+
+            if (latestProcessedArcIndex == plannedArc.length - 1) {
+                latestProcessedArcIndex = -1;
+                currentRotation = 0;
+            }
+
+            animationId = requestAnimationFrame(animate);
         }
+
         function createArc(track, pos, length) {
             arcs[crypto.randomUUID()] = {
                 track: track,
@@ -140,7 +354,7 @@
             };
         }
 
-        function bitsToPlannedArcMultiLevel(bitString, segments = 50) {
+        function bitsToPlannedArcMultiLevel(bitString, segments = 24) {
             const plannedArc = [];
             const arcLength = (Math.PI * 2 / segments);
             let bitIndex = 0;
@@ -153,7 +367,7 @@
                     if (bitString[bitIndex] === '1') {
                         plannedArc.push({
                             timing: timing,
-                            length: arcLength * 0.9, // 読み取りやすいように少し短くする
+                            length: arcLength * 0.9,
                             track: t
                         });
                     }
@@ -166,16 +380,425 @@
         function stringToBitString(str) {
             let bitString = '';
             for (let i = 0; i < str.length; i++) {
-                const ascii = str.charCodeAt(i);      // 文字をASCIIコードに変換
-                const bits = ascii.toString(2).padStart(8, '0'); // 8ビットの2進数文字列に
+                const ascii = str.charCodeAt(i);
+                const bits = ascii.toString(2).padStart(8, '0');
                 bitString += bits;
             }
             return bitString;
         }
 
-        plannedArc = bitsToPlannedArcMultiLevel(stringToBitString("Nice to meet you. I am hosoda ryusuke. call me hosoda."));
+        function bitStringToString(bitString) {
+            let result = '';
+            for (let i = 0; i < bitString.length; i += 8) {
+                const byte = bitString.substr(i, 8);
+                if (byte.length === 8) {
+                    const ascii = parseInt(byte, 2);
+                    if (ascii > 0 && ascii < 128) { // Valid ASCII range
+                        result += String.fromCharCode(ascii);
+                    }
+                }
+            }
+            return result;
+        }
 
+        function updateDiskData() {
+            currentData = document.getElementById('dataInput').value;
+            const bitString = stringToBitString(currentData);
+            plannedArc = bitsToPlannedArcMultiLevel(bitString + "                                                  ");
+            latestProcessedArcIndex = -1;
+            currentRotation = 0;
+            arcs = {};
+
+            document.getElementById('diskInfo').textContent =
+                `Data: "${currentData}"\nBinary: ${bitString}\nBits: ${bitString.length}\nTracks: ${numTracks}`;
+        }
+
+        function toggleRotation() {
+            isRotating = !isRotating;
+        }
+
+        function toggleDebugMode() {
+            debugMode = !debugMode;
+            debugCanvas.style.display = debugMode ? 'block' : 'none';
+            document.getElementById('scanPoint').style.display = debugMode ? 'block' : 'none';
+        }
+
+        // === 軽量化されたコンピュータビジョン実装 ===
+
+        function findFinderPatterns(imageData, width, height) {
+            // 軽量なファインダーパターン検出（サンプリングベース）
+            const patterns = [];
+            const step = 8; // 8ピクセルおきにサンプリング
+            const minSize = 20;
+            const maxSize = 80;
+
+            for (let y = 0; y < height - maxSize; y += step) {
+                for (let x = 0; x < width - maxSize; x += step) {
+                    for (let size = minSize; size <= maxSize; size += 10) {
+                        if (isFinderPatternFast(imageData, width, x, y, size)) {
+                            patterns.push({
+                                x: x + size / 2,
+                                y: y + size / 2,
+                                size,
+                                score: calculatePatternScore(imageData, width, x, y, size)
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 重複を除去して上位3つを返す
+            const filtered = [];
+            patterns.sort((a, b) => b.score - a.score);
+
+            for (const pattern of patterns) {
+                let isDuplicate = false;
+                for (const existing of filtered) {
+                    const dist = Math.sqrt((pattern.x - existing.x) ** 2 + (pattern.y - existing.y) ** 2);
+                    if (dist < pattern.size * 0.8) {
+                        isDuplicate = true;
+                        break;
+                    }
+                }
+                if (!isDuplicate && filtered.length < 4) {
+                    filtered.push(pattern);
+                }
+            }
+
+            return filtered;
+        }
+
+        function isFinderPatternFast(imageData, width, x, y, size) {
+            // 5x5の簡略化パターンで高速検出
+            const cellSize = size / 5;
+            const expected = [
+                [1, 1, 1, 1, 1],
+                [1, 0, 0, 0, 1],
+                [1, 0, 1, 0, 1],
+                [1, 0, 0, 0, 1],
+                [1, 1, 1, 1, 1]
+            ];
+
+            let matches = 0;
+            for (let py = 0; py < 5; py++) {
+                for (let px = 0; px < 5; px++) {
+                    const centerX = Math.floor(x + px * cellSize + cellSize / 2);
+                    const centerY = Math.floor(y + py * cellSize + cellSize / 2);
+
+                    if (centerX >= 0 && centerX < width && centerY >= 0 && centerY < width / 4) {
+                        const idx = (centerY * width + centerX) * 4;
+                        const gray = imageData[idx] * 0.299 + imageData[idx + 1] * 0.587 + imageData[idx + 2] * 0.114;
+                        const isBlack = gray < 100;
+
+                        if ((expected[py][px] === 1 && isBlack) || (expected[py][px] === 0 && !isBlack)) {
+                            matches++;
+                        }
+                    }
+                }
+            }
+
+            return matches >= 18; // 5x5 = 25, 18/25 = 72%の一致率
+        }
+
+        function calculatePatternScore(imageData, width, x, y, size) {
+            // パターンのコントラストと形状から品質スコアを計算
+            const centerX = x + size / 2;
+            const centerY = y + size / 2;
+
+            let blackPixels = 0;
+            let whitePixels = 0;
+            let totalPixels = 0;
+
+            for (let dy = -size / 2; dy < size / 2; dy += 2) {
+                for (let dx = -size / 2; dx < size / 2; dx += 2) {
+                    const px = Math.floor(centerX + dx);
+                    const py = Math.floor(centerY + dy);
+
+                    if (px >= 0 && px < width && py >= 0 && py < width / 4) {
+                        const idx = (py * width + px) * 4;
+                        const gray = imageData[idx] * 0.299 + imageData[idx + 1] * 0.587 + imageData[idx + 2] * 0.114;
+
+                        if (gray < 100) blackPixels++;
+                        else whitePixels++;
+                        totalPixels++;
+                    }
+                }
+            }
+
+            // コントラストの高さをスコアとして返す
+            return totalPixels > 0 ? Math.abs(blackPixels - whitePixels) / totalPixels : 0;
+        }
+
+        function extractDiskBounds(finderPatterns) {
+            // 3つ以上のファインダーパターンからディスクの境界を計算
+            if (finderPatterns.length < 3) return null;
+
+            // パターンの位置から四角形の境界を推定
+            const xs = finderPatterns.map(p => p.x);
+            const ys = finderPatterns.map(p => p.y);
+
+            const minX = Math.min(...xs) - 50;
+            const maxX = Math.max(...xs) + 50;
+            const minY = Math.min(...ys) - 50;
+            const maxY = Math.max(...ys) + 50;
+
+            return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
+        }
+
+        function scanSinglePoint(imageData, width, height, bounds) {
+            // ディスク範囲内の中央付近で一点スキャン
+            if (!bounds) return null;
+
+            const centerX = bounds.minX + bounds.width / 2;
+            const centerY = bounds.minY + bounds.height / 2;
+
+            // 中央から少し右にずらした位置でスキャン（回転する白い弧を読み取るため）
+            const scanX = Math.floor(centerX + bounds.width * 0.2);
+            const scanY = Math.floor(centerY);
+
+            if (scanX >= 0 && scanX < width && scanY >= 0 && scanY < height) {
+                const idx = (scanY * width + scanX) * 4;
+                const gray = imageData[idx] * 0.299 + imageData[idx + 1] * 0.587 + imageData[idx + 2] * 0.114;
+
+                return {
+                    x: scanX,
+                    y: scanY,
+                    brightness: gray,
+                    isWhite: gray > 150,
+                    timestamp: Date.now()
+                };
+            }
+
+            return null;
+        }
+
+        function analyzeScanHistory() {
+            // スキャン履歴から周期的なパターンを検出してビットを復元
+            if (scanHistory.length < 10) return null;
+
+            // 最新の50サンプルを使用
+            const recentScans = scanHistory.slice(-50);
+            let bitPattern = '';
+
+            // 白いピクセルの検出からビット列を構成
+            for (let i = 0; i < recentScans.length - 1; i++) {
+                const current = recentScans[i];
+                const next = recentScans[i + 1];
+
+                // 白→黒または黒→白の変化を検出
+                if (current.isWhite && !next.isWhite) {
+                    bitPattern += '1';
+                } else if (!current.isWhite && current.brightness < 80) {
+                    bitPattern += '0';
+                }
+            }
+
+            return bitPattern.length > 8 ? bitPattern : null;
+        }
+
+        function scanDisk() {
+            if (!video.videoWidth || !video.videoHeight) return;
+
+            const now = Date.now();
+            if (now - lastScanTime < 50) return; // 20FPS制限
+            lastScanTime = now;
+
+            try {
+                // キャンバスに現在のフレームを描画
+                debugCanvas.width = video.videoWidth;
+                debugCanvas.height = video.videoHeight;
+                debugCtx.drawImage(video, 0, 0);
+
+                const imageData = debugCtx.getImageData(0, 0, video.videoWidth, video.videoHeight);
+
+                // ファインダーパターンを検出
+                const finderPatterns = findFinderPatterns(imageData.data, video.videoWidth, video.videoHeight);
+
+                let debugInfo = `Finder patterns found: ${finderPatterns.length}\n`;
+
+                if (debugMode) {
+                    // デバッグ表示: 検出したパターンを描画
+                    debugCtx.strokeStyle = 'lime';
+                    debugCtx.lineWidth = 2;
+                    finderPatterns.forEach((pattern, i) => {
+                        debugCtx.strokeRect(pattern.x - pattern.size / 2, pattern.y - pattern.size / 2,
+                            pattern.size, pattern.size);
+                        debugCtx.fillStyle = 'lime';
+                        debugCtx.fillText(`${i}`, pattern.x - 10, pattern.y - 10);
+                    });
+                }
+
+                if (finderPatterns.length >= 3) {
+                    // ディスク範囲を抽出
+                    const bounds = extractDiskBounds(finderPatterns);
+
+                    if (bounds) {
+                        // 一点スキャン実行
+                        const scanResult = scanSinglePoint(imageData.data, video.videoWidth, video.videoHeight, bounds);
+
+                        if (scanResult) {
+                            scanHistory.push(scanResult);
+
+                            // 履歴が長すぎる場合は古いデータを削除
+                            if (scanHistory.length > 100) {
+                                scanHistory = scanHistory.slice(-100);
+                            }
+
+                            if (debugMode) {
+                                // スキャンポイントを表示
+                                debugCtx.fillStyle = scanResult.isWhite ? 'yellow' : 'red';
+                                debugCtx.beginPath();
+                                debugCtx.arc(scanResult.x, scanResult.y, 8, 0, Math.PI * 2);
+                                debugCtx.fill();
+
+                                // ディスク境界を表示
+                                debugCtx.strokeStyle = 'cyan';
+                                debugCtx.lineWidth = 1;
+                                debugCtx.strokeRect(bounds.minX, bounds.minY, bounds.width, bounds.height);
+                            }
+
+                            // 履歴からビットパターンを解析
+                            const detectedBits = analyzeScanHistory();
+
+                            debugInfo += `Scan point: (${scanResult.x}, ${scanResult.y})\n`;
+                            debugInfo += `Brightness: ${scanResult.brightness.toFixed(1)}\n`;
+                            debugInfo += `History: ${scanHistory.length} samples\n`;
+
+                            if (detectedBits) {
+                                debugInfo += `Detected bits: ${detectedBits.substr(0, 32)}...\n`;
+
+                                const decodedText = bitStringToString(detectedBits);
+
+                                if (decodedText.length > 0 && isValidText(decodedText)) {
+                                    document.getElementById('scanStatus').className = 'status success';
+                                    document.getElementById('scanStatus').textContent =
+                                        `✅ Reading disk data... Found ${decodedText.length} characters`;
+
+                                    let resultText = `🎯 Decoded Text: "${decodedText}"\n`;
+                                    resultText += `📊 Bit Pattern: ${detectedBits}\n`;
+                                    resultText += `⏰ Scan Time: ${new Date().toLocaleTimeString()}\n`;
+                                    resultText += `📏 Data Length: ${decodedText.length} characters\n`;
+                                    resultText += `🔍 Scan History: ${scanHistory.length} points\n`;
+                                    resultText += `📍 Last Scan: (${scanResult.x}, ${scanResult.y}) brightness=${scanResult.brightness.toFixed(1)}`;
+
+                                    document.getElementById('scannedData').textContent = resultText;
+                                } else {
+                                    document.getElementById('scanStatus').className = 'status info';
+                                    document.getElementById('scanStatus').textContent =
+                                        `🔄 Analyzing pattern... ${detectedBits.length} bits collected`;
+                                }
+                            } else {
+                                document.getElementById('scanStatus').className = 'status info';
+                                document.getElementById('scanStatus').textContent =
+                                    `📊 Collecting data... ${scanHistory.length} samples`;
+                            }
+                        }
+                    }
+                } else {
+                    document.getElementById('scanStatus').className = 'status info';
+                    document.getElementById('scanStatus').textContent =
+                        `🔍 Looking for disk markers... Found ${finderPatterns.length}/3`;
+                }
+
+                document.getElementById('debugInfo').textContent = debugInfo;
+
+            } catch (error) {
+                console.error('Scan error:', error);
+                document.getElementById('scanStatus').className = 'status error';
+                document.getElementById('scanStatus').textContent = '❌ Scan error: ' + error.message;
+            }
+        }
+
+        function isValidText(text) {
+            if (text.length === 0) return false;
+
+            let printableCount = 0;
+            for (let i = 0; i < text.length; i++) {
+                const code = text.charCodeAt(i);
+                if ((code >= 32 && code <= 126) || code === 10 || code === 13) {
+                    printableCount++;
+                }
+            }
+
+            return (printableCount / text.length) > 0.6;
+        }
+
+        async function startCamera() {
+            try {
+                const deviceId = document.getElementById('deviceSelect').value;
+                const constraints = {
+                    video: {
+                        ...(deviceId ? { deviceId } : { facingMode: 'environment' }),
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    }
+                };
+
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+
+                document.getElementById('scanStatus').className = 'status success';
+                document.getElementById('scanStatus').textContent = '📹 Camera active - looking for disk...';
+
+                // 軽量な20FPS スキャン
+                scanInterval = setInterval(scanDisk, 50);
+                scanHistory = []; // 履歴をリセット
+
+            } catch (error) {
+                document.getElementById('scanStatus').className = 'status error';
+                document.getElementById('scanStatus').textContent = '❌ Camera failed: ' + error.message;
+            }
+        }
+
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            if (scanInterval) {
+                clearInterval(scanInterval);
+                scanInterval = null;
+            }
+            scanHistory = [];
+            document.getElementById('scanStatus').className = 'status info';
+            document.getElementById('scanStatus').textContent = '📹 Camera stopped';
+
+            // デバッグ表示をクリア
+            if (debugMode) {
+                debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+            }
+            document.getElementById('debugInfo').textContent = '';
+        }
+
+        // Initialize camera device list
+        async function initializeDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                const select = document.getElementById('deviceSelect');
+
+                select.innerHTML = '<option value="">Default Camera</option>';
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.textContent = device.label || `Camera ${index + 1}`;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to enumerate devices:', error);
+            }
+        }
+
+        // Initialize
+        updateDiskData();
         animate();
+        initializeDevices();
+
+        // Cleanup
+        window.addEventListener('beforeunload', () => {
+            stopCamera();
+            if (animationId) cancelAnimationFrame(animationId);
+        });
     </script>
 </body>
 
