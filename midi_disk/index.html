@@ -7,7 +7,7 @@
     <title>MIDI Disk Scanner - Hyomon Tech</title>
     <style>
         body {
-            background-color: rgb(42, 43, 71);
+            background-color: rgb(76, 77, 103);
             color: rgb(209, 213, 233);
             margin: 0;
             padding: 20px;
@@ -246,13 +246,11 @@
             // QRコード風の位置決めマーカー
             const s = size / 2;
 
-            // 外側の白い正方形
-            ctx.fillStyle = 'white';
-            ctx.fillRect(x - s - 1, y - s - 1, size + 2, size + 2);
+
 
             // 外側の黒い正方形
             ctx.fillStyle = 'black';
-            ctx.fillRect(x - s, y - s, size, size);
+            ctx.fillRect(x - s - 3, y - s - 3, size + 6, size + 6);
 
             // 内側の白い正方形
             ctx.fillStyle = 'white';
@@ -296,7 +294,7 @@
             const endAngle = startAngle - arcLength;
 
             // 白い弧を描画
-            diskCtx.strokeStyle = 'white';
+            diskCtx.strokeStyle = '#aaaaaa';
             diskCtx.lineWidth = trackWidth * 0.8;
             diskCtx.lineCap = 'butt';
             diskCtx.beginPath();
@@ -428,7 +426,7 @@
         function findFinderPatterns(imageData, width, height) {
             // 高精度ファインダーパターン検出（3つ前提）
             const patterns = [];
-            const step = 10; // より細かくスキャン
+            const step = 7; // より細かくスキャン
             const targetSize = 50; // 固定サイズで検出
             const sizeVariance = 10; // ±10ピクセルの許容範囲
 
@@ -436,7 +434,7 @@
                 for (let x = 0; x < width - targetSize - sizeVariance; x += step) {
                     for (let size = targetSize - sizeVariance; size <= targetSize + sizeVariance; size += 5) {
                         const score = calculateFinderPatternScore(imageData, width, height, x, y, size);
-                        if (score > 0.85) { // 高い閾値で誤検出を防ぐ
+                        if (score > 0.8) { // 高い閾値で誤検出を防ぐ
                             patterns.push({
                                 x: x + size / 2,
                                 y: y + size / 2,
