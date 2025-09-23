@@ -428,7 +428,7 @@
         function findFinderPatterns(imageData, width, height) {
             // 高精度ファインダーパターン検出（3つ前提）
             const patterns = [];
-            const step = 6; // より細かくスキャン
+            const step = 10; // より細かくスキャン
             const targetSize = 50; // 固定サイズで検出
             const sizeVariance = 10; // ±10ピクセルの許容範囲
 
@@ -442,7 +442,7 @@
                                 y: y + size / 2,
                                 size,
                                 score: score,
-                                contrast: calculateContrast(imageData, width, x, y, size)
+                                contrast: calculateContrast(imageData, width, height, x, y, size)
                             });
                         }
                     }
@@ -538,7 +538,7 @@
             return patternScore * (0.8 + 0.2 * contrastBonus); // パターン80% + コントラスト20%
         }
 
-        function calculateContrast(imageData, width, x, y, size) {
+        function calculateContrast(imageData, width, height, x, y, size) {
             // パターン内のコントラストを計算（誤検出防止）
             let minBrightness = 255;
             let maxBrightness = 0;
