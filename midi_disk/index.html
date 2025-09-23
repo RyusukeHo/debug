@@ -237,9 +237,9 @@
 
         // QRコード風ファインダーパターンの期待座標（ディスク上の相対位置）
         const expectedFinderPositions = [
-            { x: 0.04, y: 0.04, id: 'TL' },      // Top-left (4% from edges)
-            { x: 0.96, y: 0.04, id: 'TR' },     // Top-right
-            { x: 0.04, y: 0.96, id: 'BL' },     // Bottom-left
+            { x: 0.07, y: 0.07, id: 'TL' },      // Top-left (4% from edges)
+            { x: 0.93, y: 0.07, id: 'TR' },     // Top-right
+            { x: 0.07, y: 0.93, id: 'BL' },     // Bottom-left
         ];
 
         function drawFinderPattern(ctx, x, y, size) {
@@ -281,7 +281,7 @@
             expectedFinderPositions.forEach(pos => {
                 const x = pos.x * diskCanvas.width;
                 const y = pos.y * diskCanvas.height;
-                drawFinderPattern(diskCtx, x, y, 30);
+                drawFinderPattern(diskCtx, x, y, 50);
             });
         }
 
@@ -426,41 +426,44 @@
         // === 軽量化されたコンピュータビジョン実装 ===
 
         function findFinderPatterns(imageData, width, height) {
-            // 軽量なファインダーパターン検出（サンプリングベース）
+            // 高精度ファインダーパターン検出（3つ前提）
             const patterns = [];
-            const step = 8; // 8ピクセルおきにサンプリング
-            const minSize = 20;
-            const maxSize = 80;
+            const step = 6; // より細かくスキャン
+            const targetSize = 50; // 固定サイズで検出
+            const sizeVariance = 10; // ±10ピクセルの許容範囲
 
-            for (let y = 0; y < height - maxSize; y += step) {
-                for (let x = 0; x < width - maxSize; x += step) {
-                    for (let size = minSize; size <= maxSize; size += 10) {
-                        if (isFinderPatternFast(imageData, width, x, y, size)) {
+            for (let y = 0; y < height - targetSize - sizeVariance; y += step) {
+                for (let x = 0; x < width - targetSize - sizeVariance; x += step) {
+                    for (let size = targetSize - sizeVariance; size <= targetSize + sizeVariance; size += 5) {
+                        const score = calculateFinderPatternScore(imageData, width, height, x, y, size);
+                        if (score > 0.85) { // 高い閾値で誤検出を防ぐ
                             patterns.push({
                                 x: x + size / 2,
                                 y: y + size / 2,
                                 size,
-                                score: calculatePatternScore(imageData, width, x, y, size)
+                                score: score,
+                                contrast: calculateContrast(imageData, width, x, y, size)
                             });
                         }
                     }
                 }
             }
 
-            // 重複を除去して上位3つを返す
-            const filtered = [];
-            patterns.sort((a, b) => b.score - a.score);
+            // スコアとコントラストでソート
+            patterns.sort((a, b) => (b.score * b.contrast) - (a.score * a.contrast));
 
+            // 重複除去（より厳格な距離チェック）
+            const filtered = [];
             for (const pattern of patterns) {
                 let isDuplicate = false;
                 for (const existing of filtered) {
                     const dist = Math.sqrt((pattern.x - existing.x) ** 2 + (pattern.y - existing.y) ** 2);
-                    if (dist < pattern.size * 0.8) {
+                    if (dist < pattern.size * 0.6) { // より厳格な重複判定
                         isDuplicate = true;
                         break;
                     }
                 }
-                if (!isDuplicate && filtered.length < 4) {
+                if (!isDuplicate && filtered.length < 3) { // 3つまでに制限
                     filtered.push(pattern);
                 }
             }
@@ -468,65 +471,96 @@
             return filtered;
         }
 
-        function isFinderPatternFast(imageData, width, x, y, size) {
-            // 5x5の簡略化パターンで高速検出
-            const cellSize = size / 5;
+        function calculateFinderPatternScore(imageData, width, height, x, y, size) {
+            // より正確な7x7パターンマッチング
+            const cellSize = size / 7;
             const expected = [
-                [1, 1, 1, 1, 1],
-                [1, 0, 0, 0, 1],
-                [1, 0, 1, 0, 1],
-                [1, 0, 0, 0, 1],
-                [1, 1, 1, 1, 1]
+                [1, 1, 1, 1, 1, 1, 1],
+                [1, 0, 0, 0, 0, 0, 1],
+                [1, 0, 1, 1, 1, 0, 1],
+                [1, 0, 1, 1, 1, 0, 1],
+                [1, 0, 1, 1, 1, 0, 1],
+                [1, 0, 0, 0, 0, 0, 1],
+                [1, 1, 1, 1, 1, 1, 1]
             ];
 
-            let matches = 0;
-            for (let py = 0; py < 5; py++) {
-                for (let px = 0; px < 5; px++) {
+            let correctMatches = 0;
+            let totalChecked = 0;
+            let centerContrast = 0;
+
+            for (let py = 0; py < 7; py++) {
+                for (let px = 0; px < 7; px++) {
                     const centerX = Math.floor(x + px * cellSize + cellSize / 2);
                     const centerY = Math.floor(y + py * cellSize + cellSize / 2);
 
-                    if (centerX >= 0 && centerX < width && centerY >= 0 && centerY < width / 4) {
-                        const idx = (centerY * width + centerX) * 4;
-                        const gray = imageData[idx] * 0.299 + imageData[idx + 1] * 0.587 + imageData[idx + 2] * 0.114;
-                        const isBlack = gray < 100;
+                    if (centerX >= 0 && centerX < width && centerY >= 0 && centerY < height) {
+                        // 各セルの平均明度を計算（ノイズ耐性向上）
+                        let avgGray = 0;
+                        let sampleCount = 0;
 
-                        if ((expected[py][px] === 1 && isBlack) || (expected[py][px] === 0 && !isBlack)) {
-                            matches++;
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                const sampleX = centerX + dx;
+                                const sampleY = centerY + dy;
+                                if (sampleX >= 0 && sampleX < width && sampleY >= 0 && sampleY < height) {
+                                    const idx = (sampleY * width + sampleX) * 4;
+                                    avgGray += imageData[idx] * 0.299 + imageData[idx + 1] * 0.587 + imageData[idx + 2] * 0.114;
+                                    sampleCount++;
+                                }
+                            }
+                        }
+
+                        if (sampleCount > 0) {
+                            avgGray /= sampleCount;
+                            const isBlack = avgGray < 120; // より厳格な閾値
+                            const expectedBlack = expected[py][px] === 1;
+
+                            if (isBlack === expectedBlack) {
+                                correctMatches++;
+                            }
+
+                            // 中央部分（3,3）のコントラストを測定
+                            if (px === 3 && py === 3) {
+                                centerContrast = isBlack ? avgGray : (255 - avgGray);
+                            }
+
+                            totalChecked++;
                         }
                     }
                 }
             }
 
-            return matches >= 18; // 5x5 = 25, 18/25 = 72%の一致率
+            if (totalChecked === 0) return 0;
+
+            const patternScore = correctMatches / totalChecked;
+            const contrastBonus = Math.min(1.0, centerContrast / 100); // コントラストボーナス
+
+            return patternScore * (0.8 + 0.2 * contrastBonus); // パターン80% + コントラスト20%
         }
 
-        function calculatePatternScore(imageData, width, x, y, size) {
-            // パターンのコントラストと形状から品質スコアを計算
-            const centerX = x + size / 2;
-            const centerY = y + size / 2;
+        function calculateContrast(imageData, width, x, y, size) {
+            // パターン内のコントラストを計算（誤検出防止）
+            let minBrightness = 255;
+            let maxBrightness = 0;
+            let sampleCount = 0;
 
-            let blackPixels = 0;
-            let whitePixels = 0;
-            let totalPixels = 0;
+            for (let dy = 0; dy < size; dy += 3) {
+                for (let dx = 0; dx < size; dx += 3) {
+                    const px = x + dx;
+                    const py = y + dy;
 
-            for (let dy = -size / 2; dy < size / 2; dy += 2) {
-                for (let dx = -size / 2; dx < size / 2; dx += 2) {
-                    const px = Math.floor(centerX + dx);
-                    const py = Math.floor(centerY + dy);
-
-                    if (px >= 0 && px < width && py >= 0 && py < width / 4) {
+                    if (px >= 0 && px < width && py >= 0 && py < height) {
                         const idx = (py * width + px) * 4;
                         const gray = imageData[idx] * 0.299 + imageData[idx + 1] * 0.587 + imageData[idx + 2] * 0.114;
 
-                        if (gray < 100) blackPixels++;
-                        else whitePixels++;
-                        totalPixels++;
+                        minBrightness = Math.min(minBrightness, gray);
+                        maxBrightness = Math.max(maxBrightness, gray);
+                        sampleCount++;
                     }
                 }
             }
 
-            // コントラストの高さをスコアとして返す
-            return totalPixels > 0 ? Math.abs(blackPixels - whitePixels) / totalPixels : 0;
+            return sampleCount > 0 ? (maxBrightness - minBrightness) / 255 : 0;
         }
 
         function extractDiskBounds(finderPatterns) {
@@ -697,7 +731,7 @@
                 } else {
                     document.getElementById('scanStatus').className = 'status info';
                     document.getElementById('scanStatus').textContent =
-                        `🔍 Looking for disk markers... Found ${finderPatterns.length}/3`;
+                        `🔍 Looking for 3 disk markers... Found ${finderPatterns.length}/3`;
                 }
 
                 document.getElementById('debugInfo').textContent = debugInfo;
